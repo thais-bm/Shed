@@ -9,6 +9,7 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
     "cryptography>=50.0.2",
+    "fastapi[standard]>=0.143.0",
     "pyserpent>=1.2.0",
 ]
 
