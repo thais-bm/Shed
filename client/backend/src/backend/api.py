@@ -1,6 +1,7 @@
 # client/backend/src/backend/api.py
 import asyncio
 import json
+import os
 import websockets
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -12,8 +13,12 @@ from backend.audit import SecurityAuditor
 from backend.storage import LocalStorage
 
 # Configurações do usuário logado nesta máquina
-MEU_USUARIO = "alice"
-RELAY_URL = f"ws://127.0.0.1:8000/ws/{MEU_USUARIO}"
+MEU_USUARIO = os.getenv("SHED_USERNAME", "alice").strip()
+if not MEU_USUARIO:
+    raise RuntimeError("A variável SHED_USERNAME não pode estar vazia.")
+
+RELAY_BASE_URL = os.getenv("SHED_RELAY_URL", "ws://127.0.0.1:8000").rstrip("/")
+RELAY_URL = f"{RELAY_BASE_URL}/ws/{MEU_USUARIO}"
 
 # Estado global em memória
 # Mapeia: username_do_contato -> Instância de SecureSession
@@ -104,6 +109,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.get("/")
+async def api_info():
+    return {"service": "Shed Local API", "status": "ok"}
+
+
+@app.get("/health")
+async def api_health():
+    return {"status": "ok"}
 
 
 @app.post("/chat/start/{contato}")

@@ -1,4 +1,5 @@
 # src/backend/audit.py
+import sys
 from datetime import datetime
 
 class SecurityAuditor:
@@ -20,6 +21,9 @@ class SecurityAuditor:
         
         color = colors.get(module.upper(), "\033[97m")
         
-        print(f"[{time_now}] {color}[{module.upper()}]{colors['ENDC']} {action}")
+        encoding = sys.stdout.encoding or "utf-8"
+        safe_action = action.encode(encoding, errors="replace").decode(encoding)
+        print(f"[{time_now}] {color}[{module.upper()}]{colors['ENDC']} {safe_action}")
         if details:
-            print(f" └── {details}")
+            safe_details = details.encode(encoding, errors="replace").decode(encoding)
+            print(f" +-- {safe_details}")
