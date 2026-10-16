@@ -9,6 +9,8 @@ authors = [
 requires-python = ">=3.11"
 dependencies = [
     "fastapi[standard]>=0.143.0",
+    "pwdlib[argon2]>=0.3.1",
+    "pyjwt>=2.15.1",
 ]
 
 [project.scripts]
@@ -17,3 +19,9 @@ server = "server:main"
 [build-system]
 requires = ["uv_build>=0.12.19,<0.13.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+]

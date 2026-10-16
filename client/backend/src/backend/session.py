@@ -1,15 +1,17 @@
 import hashlib
-from .crypto import ECDHManager
+from .crypto import ECDHManager, IdentityKeyManager
 from .serpent_enc import SerpentProtocol
 
 
 class SecureSession:
     """
     Representa uma sessão segura entre dois participantes.
+    Suporta handshakes ECDH autenticados por assinatura ECDSA (Chave de Identidade).
     """
 
     def __init__(self):
         self.ecdh = ECDHManager()
+        self.identity_manager = IdentityKeyManager()
         self.private_key, self.public_key = self.ecdh.generate_key_pair()
         self.serpent = None
         self.peer_public_key_pem: bytes | None = None  # Retém a chave para a impressão digital
@@ -22,8 +24,32 @@ class SecureSession:
     def get_public_key(self) -> bytes:
         return self.ecdh.export_public_key(self.public_key)
 
-    def establish_session(self, peer_public_key_pem: bytes):
-        # 1. Guarda a chave pública recebida do par
+    def get_signed_public_key(self, identity_private_key) -> tuple[bytes, bytes]:
+        """
+        Exporta a chave pública efêmera ECDH e gera sua assinatura digital ECDSA
+        usando a Chave Privada de Identidade permanente do usuário.
+        """
+        pub_pem = self.get_public_key()
+        signature = self.identity_manager.sign_ephemeral_key(identity_private_key, pub_pem)
+        return pub_pem, signature
+
+    def establish_session(
+        self,
+        peer_public_key_pem: bytes,
+        signature: bytes | None = None,
+        peer_identity_public_key_pem: bytes | None = None,
+    ):
+        # 1. Se a chave de identidade do par foi informada, exige e valida a assinatura ECDSA
+        if peer_identity_public_key_pem is not None:
+            if signature is None:
+                raise ValueError("Assinatura ECDSA ausente no handshake autenticado.")
+            self.identity_manager.verify_ephemeral_key(
+                peer_identity_public_key_pem=peer_identity_public_key_pem,
+                ephemeral_public_key_pem=peer_public_key_pem,
+                signature=signature,
+            )
+
+        # 2. Guarda a chave pública recebida do par
         self.peer_public_key_pem = peer_public_key_pem
 
         peer_public_key = self.ecdh.load_public_key(peer_public_key_pem)

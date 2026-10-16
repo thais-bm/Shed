@@ -10,16 +10,17 @@ Este arquivo consolida o estado atual do desenvolvimento do **Shed**, fornecendo
 +-----------------------------------------------------------------------------------------------------------------+
 |               DONE (Concluído)              |            DOING (Em Andamento)           |          TO-DO (A Fazer)          |
 +-----------------------------------------------------------------------------------------------------------------+
-| [x] Handshake ECDH (SECP384R1)              | [ ] Correção do bug em securityService.js | [ ] Autenticação e JWT no Relé    |
-| [x] Derivação de chaves HKDF-SHA256         | [ ] Integração do Frontend com as APIs   | [ ] Gestão de Amigos e Busca      |
-| [x] Cifragem Serpent CBC + PKCS#7           | [ ] Testes manuais integrados Alice/Bob   | [ ] Fila de mensagens offline     |
-| [x] HMAC-SHA256 (Encrypt-then-MAC)          |                                           | [ ] Interface gráfica de Chat UI  |
-| [x] Algoritmo e teste de Safety Number      |                                           | [ ] Push em tempo real (SSE/WS)   |
-| [x] Bateria de testes unitários (pytest)    |                                           | [ ] Persistência de sessões ECDH  |
-| [x] Servidor relé básico (WebSocket)        |                                           | [ ] Proteção contra Replay Attack |
-| [x] Backend local (FastAPI) com banco SQLite|                                           | [ ] Script único de inicialização |
-| [x] Auditor visual de segurança no terminal |                                           |                                   |
-| [x] Especificação de Auth e Descoberta      |                                           |                                   |
+| [x] Handshake ECDH (SECP384R1)              | [ ] Correção do bug em securityService.js | [ ] Interface gráfica de Chat UI  |
+| [x] Derivação de chaves HKDF-SHA256         | [ ] Integração do Frontend com as APIs   | [ ] Push em tempo real (SSE/WS)   |
+| [x] Cifragem Serpent CBC + PKCS#7           | [ ] Testes manuais integrados Alice/Bob   | [ ] Persistência de sessões ECDH  |
+| [x] HMAC-SHA256 (Encrypt-then-MAC)          |                                           | [ ] Proteção contra Replay Attack |
+| [x] Algoritmo e teste de Safety Number      |                                           | [ ] Script único de inicialização |
+| [x] Assinatura ECDSA + TOFU no Handshake    |                                           |                                   |
+| [x] Split-Key Password Derivation (HKDF)    |                                           |                                   |
+| [x] Autenticação Argon2 + JWT no Relé       |                                           |                                   |
+| [x] Roteamento Friends-Only e Fila Offline  |                                           |                                   |
+| [x] Auth & Friends Proxy na API Local       |                                           |                                   |
+| [x] Bateria de testes unitários (14 testes) |                                           |                                   |
 +-----------------------------------------------------------------------------------------------------------------+
 ```
 
@@ -98,24 +99,30 @@ Este arquivo consolida o estado atual do desenvolvimento do **Shed**, fornecendo
   - Atualmente a API salva no SQLite, mas o React não recebe evento push imediato.
   - Implementar Server-Sent Events (SSE) em `GET /chat/events` ou WebSocket local na porta `8001` para avisar a tela quando uma mensagem chegar.
 
-### Fase 3: Autenticação & Gestão de Amigos no Servidor Relé
-*(Conforme especificado em [`docs/AUTHENTICATION_AND_DISCOVERY.md`](AUTHENTICATION_AND_DISCOVERY.md))*
-- [ ] **Banco de Dados no Servidor (`server/`)**:
-  - Criar tabelas SQLite/SQLAlchemy: `users`, `friendships`, `offline_messages`.
-- [ ] **Endpoints de Autenticação**:
-  - `POST /auth/register`: Cadastro com hash seguro de senha (Argon2 / bcrypt) e registro de Chave de Identidade.
+### Fase 3: Autenticação & Gestão de Amigos no Servidor Relé ✅
+*(Conforme especificado em [`docs/AUTHENTICATION_AND_DISCOVERY.md`](docs/AUTHENTICATION_AND_DISCOVERY.md))*
+- [x] **Banco de Dados no Servidor (`server/src/server/database.py`)**:
+  - Tabelas SQLite criadas: `users`, `friendships`, `offline_messages`.
+- [x] **Endpoints de Autenticação (`server/src/server/auth.py` & `__init__.py`)**:
+  - `POST /auth/register`: Cadastro com hash seguro de senha (Argon2) e registro de Chave de Identidade.
   - `POST /auth/login`: Validação de credenciais e emissão de JWT.
-- [ ] **Proteção do WebSocket**:
-  - Substituir `/ws/{username}` por `/ws?token={access_token}` para impedir roubo de identidade.
-- [ ] **CRUD de Descoberta e Amigos**:
-  - `GET /users/search?q={query}`: Busca de usuários.
+- [x] **Proteção do WebSocket & Roteamento Friends-Only**:
+  - Validação obrigatória de `?token={access_token}` no `/ws/{username}` para usuários registrados, impedindo roubo de identidade.
+  - Bloqueio automático de pacotes de handshake/chat caso remetente e destinatário não sejam amigos aceitos (`are_friends`).
+- [x] **CRUD de Descoberta e Amigos**:
+  - `GET /users/search?q={query}` & `GET /users/{username}/identity-key`: Busca de usuários e consulta de chave pública de identidade.
   - `POST /friends/request/{username}`: Envio de solicitação.
-  - `POST /friends/accept/{username}`: Aceite de amizade.
+  - `POST /friends/accept/{username}` & `POST /friends/reject/{username}`: Aceite/recusa de amizade.
+  - `DELETE /friends/{username}`: Remoção de amizade.
   - `GET /friends`: Listagem de amigos confirmados e solicitações pendentes.
+- [x] **Split-Key Derivation + Assinatura ECDSA + TOFU no Cliente Local (`client/backend`)**:
+  - Derivação dividida via HKDF (`local_storage_key` retida no dispositivo + `relay_login_secret` enviada ao relé).
+  - Geração de Chave de Identidade ECDSA (`SECP384R1`), cofre local cifrado no SQLite, assinatura digital do handshake ECDH e verificação TOFU (`trusted_identities`).
+  - Rotas de registro, login e gestão de amigos integradas em `client/backend/src/backend/api.py`.
 
 ### Fase 4: Confiabilidade & Mensagens Offline
-- [ ] **Fila Store-and-Forward**:
-  - Se Bob estiver desconectado quando Alice enviar uma mensagem, o relé deve reter o envelope JSON cifrado no banco e entregar assim que Bob autenticar.
+- [x] **Fila Store-and-Forward (`server/src/server/database.py`)**:
+  - Se Bob estiver desconectado quando Alice enviar uma mensagem, o relé retém o envelope JSON cifrado no banco e entrega assim que Bob autenticar no WebSocket.
 - [ ] **Recibos de Entrega / Erro**:
   - Avisar o remetente caso o destinatário não exista ou caso o pacote tenha sido enfileirado offline.
 
