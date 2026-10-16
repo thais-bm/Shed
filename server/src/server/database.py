@@ -10,6 +10,8 @@ class RelayDatabase:
     grafo de amizades e fila de envelopes cifrados offline.
     """
 
+    _initialized_paths: set[Path] = set()
+
     def __init__(self, db_path: str | Path | None = None):
         if db_path is None:
             env_path = os.getenv("SHED_RELAY_DB")
@@ -24,7 +26,10 @@ class RelayDatabase:
             if self.db_path.parent != Path("."):
                 self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
-        self._init_db()
+        resolved_path = self.db_path.resolve()
+        if resolved_path not in RelayDatabase._initialized_paths or not self.db_path.exists():
+            self._init_db()
+            RelayDatabase._initialized_paths.add(resolved_path)
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path)

@@ -54,7 +54,9 @@ source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
     { name = "fastapi", extra = ["standard"] },
+    { name = "httpx" },
     { name = "pyserpent" },
+    { name = "websockets" },
 ]
 
 [package.dev-dependencies]
@@ -66,7 +68,9 @@ dev = [
 requires-dist = [
     { name = "cryptography", specifier = ">=50.0.2" },
     { name = "fastapi", extras = ["standard"], specifier = ">=0.143.0" },
+    { name = "httpx", specifier = ">=0.28.1" },
     { name = "pyserpent", specifier = ">=1.2.0" },
+    { name = "websockets", specifier = ">=17.2" },
 ]
 
 [package.metadata.requires-dev]

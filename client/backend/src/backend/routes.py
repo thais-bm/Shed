@@ -1,9 +1,9 @@
 # client/backend/src/backend/routes.py
 import json
-import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.security import OAuth2PasswordRequestForm
 
+from .audit import SecurityAuditor
 from .local_auth import (
     get_relay_auth_headers,
     logout_offline_mode,
@@ -11,8 +11,8 @@ from .local_auth import (
     register_local_account,
     require_authenticated_user,
 )
-from .relay_client import send_handshake_init
-from .state import RELAY_HTTP_BASE_URL, AuthCredentialsPayload, MessagePayload, state
+from .relay_client import relay_request, send_handshake_init
+from .state import AuthCredentialsPayload, MessagePayload, state
 from .storage import LocalStorage
 
 auth_router = APIRouter(prefix="/auth", tags=["Autenticação"])
@@ -46,51 +46,39 @@ async def logout_modo_offline(current_user: str = Depends(require_authenticated_
 
 
 # =============================================================================
-# Rotas de Descoberta de Usuários e Gestão de Amigos (/users/* & /friends/*)
+# Rotas de Descoberta de Usuários e Gestão de Amigos (proxy para o Relé)
 # =============================================================================
 @friends_router.get("/users/search")
 async def buscar_usuarios(
     q: str = Query(..., min_length=1),
     headers: dict[str, str] = Depends(get_relay_auth_headers),
 ):
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        res = await client.get(f"{RELAY_HTTP_BASE_URL}/users/search", params={"q": q}, headers=headers)
-        if not res.is_success:
-            raise HTTPException(status_code=res.status_code, detail=res.text)
-        return res.json()
+    return await relay_request("GET", "/users/search", headers=headers, params={"q": q})
 
 
 @friends_router.get("/friends")
 async def listar_amigos(headers: dict[str, str] = Depends(get_relay_auth_headers)):
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        res = await client.get(f"{RELAY_HTTP_BASE_URL}/friends", headers=headers)
-        if not res.is_success:
-            raise HTTPException(status_code=res.status_code, detail=res.text)
-        return res.json()
+    return await relay_request("GET", "/friends", headers=headers)
 
 
 @friends_router.post("/friends/request/{contato}")
-async def enviar_solicitacao_amizade(
-    contato: str,
-    headers: dict[str, str] = Depends(get_relay_auth_headers),
-):
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        res = await client.post(f"{RELAY_HTTP_BASE_URL}/friends/request/{contato}", headers=headers)
-        if not res.is_success:
-            raise HTTPException(status_code=res.status_code, detail=res.json().get("detail", res.text))
-        return res.json()
+async def enviar_solicitacao_amizade(contato: str, headers: dict[str, str] = Depends(get_relay_auth_headers)):
+    return await relay_request("POST", f"/friends/request/{contato}", headers=headers)
 
 
 @friends_router.post("/friends/accept/{contato}")
-async def aceitar_solicitacao_amizade(
-    contato: str,
-    headers: dict[str, str] = Depends(get_relay_auth_headers),
-):
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        res = await client.post(f"{RELAY_HTTP_BASE_URL}/friends/accept/{contato}", headers=headers)
-        if not res.is_success:
-            raise HTTPException(status_code=res.status_code, detail=res.json().get("detail", res.text))
-        return res.json()
+async def aceitar_solicitacao_amizade(contato: str, headers: dict[str, str] = Depends(get_relay_auth_headers)):
+    return await relay_request("POST", f"/friends/accept/{contato}", headers=headers)
+
+
+@friends_router.post("/friends/reject/{contato}")
+async def recusar_solicitacao_amizade(contato: str, headers: dict[str, str] = Depends(get_relay_auth_headers)):
+    return await relay_request("POST", f"/friends/reject/{contato}", headers=headers)
+
+
+@friends_router.delete("/friends/{contato}")
+async def remover_amigo(contato: str, headers: dict[str, str] = Depends(get_relay_auth_headers)):
+    return await relay_request("DELETE", f"/friends/{contato}", headers=headers)
 
 
 # =============================================================================
@@ -102,8 +90,7 @@ async def iniciar_chat(
     current_user: str = Depends(require_authenticated_user),
 ):
     """O React chama esta rota quando o usuário clica num contato para iniciar o handshake."""
-    contato = contato.strip().lower()
-    await send_handshake_init(contato, current_user)
+    await send_handshake_init(contato.strip().lower(), current_user)
     return {"status": "Convite ECDH enviado.", "signed": state.identity_private_key is not None}
 
 
@@ -124,39 +111,26 @@ async def enviar_mensagem(
     contato = contato.strip().lower()
     sessao = state.active_sessions.get(contato)
 
-    if not sessao:
-        await send_handshake_init(contato, current_user)
+    if not sessao or not sessao.is_established:
+        if not sessao:
+            await send_handshake_init(contato, current_user)
         state.pending_handshake_messages.setdefault(contato, []).append(payload.text)
         return {
             "status": (
-                f"Handshake ECDH iniciado com '{contato}'. "
-                "A mensagem foi agendada e será cifrada e enviada assim que o handshake concluir!"
+                f"Aguardando handshake ECDH com '{contato}'. "
+                "A mensagem será cifrada e enviada automaticamente assim que o handshake concluir!"
             )
         }
-
-    if not sessao.is_established:
-        state.pending_handshake_messages.setdefault(contato, []).append(payload.text)
-        return {
-            "status": (
-                f"Aguardando resposta de handshake de '{contato}' (usuário possivelmente offline). "
-                "A mensagem será cifrada e enviada automaticamente assim que ele conectar!"
-            )
-        }
-
-    pacote_cifrado = sessao.encrypt(payload.text)
 
     mensagem = {
         "type": "CHAT_MESSAGE",
         "from": current_user,
         "to": contato,
-        "payload": pacote_cifrado.hex(),
+        "payload": sessao.encrypt(payload.text).hex(),
     }
-
     await state.relay_websocket.send(json.dumps(mensagem))
 
-    db = LocalStorage(current_user)
-    db.save_message(contact_username=contato, is_sender=True, content=payload.text)
-
+    LocalStorage(current_user).save_message(contact_username=contato, is_sender=True, content=payload.text)
     return {"status": "Mensagem cifrada e enviada."}
 
 
@@ -166,8 +140,7 @@ async def obter_safety_number(
     current_user: str = Depends(require_authenticated_user),
 ):
     """O React chama esta rota para preencher o modal de segurança."""
-    contato = contato.strip().lower()
-    sessao = state.active_sessions.get(contato)
+    sessao = state.active_sessions.get(contato.strip().lower())
     if not sessao or not sessao.is_established:
         raise HTTPException(status_code=400, detail="Sessão não estabelecida.")
     return {"safety_number": sessao.get_safety_number()}
@@ -179,6 +152,11 @@ async def obter_historico(
     current_user: str = Depends(require_authenticated_user),
 ):
     """O React chama esta rota para carregar as mensagens antigas da tela."""
-    db = LocalStorage(current_user)
-    historico = db.get_chat_history(contato.strip().lower())
+    historico = LocalStorage(current_user).get_chat_history(contato.strip().lower())
     return {"history": historico}
+
+
+@chat_router.get("/audit-log")
+async def obter_log_auditoria():
+    """Retorna o passo a passo criptográfico (ECDH, ECDSA, HKDF, Serpent, HMAC, TOFU) desta instância."""
+    return {"audit_log": SecurityAuditor.get_history()}

@@ -30,7 +30,7 @@ class PasswordKeyDeriver:
         relay_login_secret = key_material[32:].hex()
 
         SecurityAuditor.log_step(
-            "ECDH",
+            "AUTH",
             "Split-Key concluído via HKDF-SHA256.",
             "Chave local (32B) retida no dispositivo | Segredo de login derivado para o Relé.",
         )
@@ -52,7 +52,7 @@ class IdentityKeyManager:
         private_key = ec.generate_private_key(self.curve)
         public_key = private_key.public_key()
         SecurityAuditor.log_step(
-            "ECDH",
+            "ECDSA",
             "Par de Chaves de Identidade (ECDSA) gerado.",
             f"Curva: {self.curve.name}",
         )
@@ -105,7 +105,7 @@ class IdentityKeyManager:
             ec.ECDSA(hashes.SHA256()),
         )
         SecurityAuditor.log_step(
-            "ECDH",
+            "ECDSA",
             "Chave efêmera ECDH assinada com ECDSA-SHA256.",
             f"Assinatura: {signature.hex()[:20]}...",
         )
@@ -129,13 +129,13 @@ class IdentityKeyManager:
                 ec.ECDSA(hashes.SHA256()),
             )
             SecurityAuditor.log_step(
-                "ECDH",
+                "ECDSA",
                 "Assinatura ECDSA do contato validada com sucesso!",
             )
             return True
         except InvalidSignature as exc:
             SecurityAuditor.log_step(
-                "ECDH",
+                "ECDSA",
                 "ALERTA MITM: Assinatura ECDSA inválida no handshake!",
             )
             raise ValueError(

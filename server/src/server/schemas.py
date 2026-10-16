@@ -24,13 +24,6 @@ class UserPublic(BaseModel):
     created_at: str
 
 
-class FriendInfo(BaseModel):
-    username: str
-    status: str
-    direction: str  # "sent", "received" ou "accepted"
-    updated_at: str
-
-
 class FriendsListResponse(BaseModel):
     friends: list[str]
     pending_received: list[str]

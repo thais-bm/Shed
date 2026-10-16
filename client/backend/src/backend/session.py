@@ -13,6 +13,8 @@ class SecureSession:
         self.ecdh = ECDHManager()
         self.identity_manager = IdentityKeyManager()
         self.private_key, self.public_key = self.ecdh.generate_key_pair()
+        # A chave efêmera não muda durante a sessão: exporta para PEM uma única vez
+        self._public_key_pem = self.ecdh.export_public_key(self.public_key)
         self.serpent = None
         self.peer_public_key_pem: bytes | None = None  # Retém a chave para a impressão digital
 
@@ -22,7 +24,7 @@ class SecureSession:
         return self.serpent is not None
 
     def get_public_key(self) -> bytes:
-        return self.ecdh.export_public_key(self.public_key)
+        return self._public_key_pem
 
     def get_signed_public_key(self, identity_private_key) -> tuple[bytes, bytes]:
         """

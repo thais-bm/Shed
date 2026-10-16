@@ -1,11 +1,10 @@
 # client/backend/src/backend/local_auth.py
-import httpx
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 
 from .crypto import IdentityKeyManager, PasswordKeyDeriver
-from .relay_client import restart_relay_listener, stop_relay_listener
-from .state import RELAY_HTTP_BASE_URL, AuthCredentialsPayload, state
+from .relay_client import relay_request, restart_relay_listener, stop_relay_listener
+from .state import AuthCredentialsPayload, state
 from .storage import LocalStorage
 
 # OAuth2PasswordBearer habilita o botão "Authorize" (Username + Password) no Swagger UI (/docs)
@@ -35,6 +34,23 @@ def get_relay_auth_headers(token: str | None = Depends(oauth2_scheme)) -> dict[s
     return {"Authorization": f"Bearer {effective_token}"}
 
 
+def _normalize_username(username: str) -> str:
+    clean_username = username.strip().lower()
+    if not clean_username:
+        raise HTTPException(status_code=400, detail="O nome de usuário não pode estar vazio.")
+    return clean_username
+
+
+def _token_response(status_message: str, **extra) -> dict:
+    return {
+        "access_token": state.relay_jwt_token,
+        "token_type": "bearer",
+        "username": state.username,
+        "status": status_message,
+        **extra,
+    }
+
+
 async def register_local_account(payload: AuthCredentialsPayload) -> dict:
     """
     1. Deriva duas chaves independentes (Split-Key) a partir da senha mestre.
@@ -42,9 +58,7 @@ async def register_local_account(payload: AuthCredentialsPayload) -> dict:
     3. Cifra a chave privada de identidade com `local_storage_key` e salva no SQLite local.
     4. Envia apenas `relay_login_secret` e `public_identity_key` ao Servidor Relé.
     """
-    clean_username = payload.username.strip().lower()
-    if not clean_username:
-        raise HTTPException(status_code=400, detail="O nome de usuário não pode estar vazio.")
+    clean_username = _normalize_username(payload.username)
 
     # 1. Split-Key Derivation
     local_storage_key, relay_login_secret = PasswordKeyDeriver.derive_master_keys(
@@ -58,37 +72,26 @@ async def register_local_account(payload: AuthCredentialsPayload) -> dict:
     encrypted_priv_pem = id_manager.export_private_key(priv_key, local_storage_key=local_storage_key)
 
     # 3. Registra no Servidor Relé (sem nunca enviar a senha mestre real!)
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        res = await client.post(
-            f"{RELAY_HTTP_BASE_URL}/auth/register",
-            json={
-                "username": clean_username,
-                "password": relay_login_secret,
-                "public_identity_key": pub_pem,
-            },
-        )
-        if res.status_code != 201:
-            detail = res.json().get("detail", "Falha ao registrar no relé.")
-            raise HTTPException(status_code=res.status_code, detail=detail)
-        token_data = res.json()
+    token_data = await relay_request(
+        "POST",
+        "/auth/register",
+        json_body={
+            "username": clean_username,
+            "password": relay_login_secret,
+            "public_identity_key": pub_pem,
+        },
+    )
 
     # 4. Salva identidade cifrada no banco local e ativa em memória
-    state.username = clean_username
-    db = LocalStorage(state.username)
-    db.save_my_identity(encrypted_priv_pem, pub_pem)
+    LocalStorage(clean_username).save_my_identity(encrypted_priv_pem, pub_pem)
 
+    state.username = clean_username
     state.identity_private_key = priv_key
     state.identity_public_key_pem = pub_pem
     state.relay_jwt_token = token_data["access_token"]
 
     await restart_relay_listener()
-    return {
-        "access_token": state.relay_jwt_token,
-        "token_type": "bearer",
-        "username": state.username,
-        "status": "Conta registrada com Split-Key e Identidade ECDSA.",
-        "public_identity_key": pub_pem,
-    }
+    return _token_response("Conta registrada com Split-Key e Identidade ECDSA.", public_identity_key=pub_pem)
 
 
 async def perform_local_login(username: str, password: str) -> dict:
@@ -98,25 +101,23 @@ async def perform_local_login(username: str, password: str) -> dict:
     2. Desbloqueia a Chave Privada de Identidade ECDSA no SQLite local.
     3. Autentica no Servidor Relé usando `relay_login_secret` e conecta ao WebSocket.
     """
-    clean_username = username.strip().lower()
-    if not clean_username:
-        raise HTTPException(status_code=400, detail="O nome de usuário não pode estar vazio.")
+    clean_username = _normalize_username(username)
 
     local_storage_key, relay_login_secret = PasswordKeyDeriver.derive_master_keys(
         clean_username, password
     )
 
-    db = LocalStorage(clean_username)
-    stored_identity = db.get_my_identity()
-    id_manager = IdentityKeyManager()
+    stored_identity = LocalStorage(clean_username).get_my_identity()
+    identity_private_key = None
+    identity_public_key_pem = None
 
     if stored_identity:
         try:
-            state.identity_private_key = id_manager.load_private_key(
+            identity_private_key = IdentityKeyManager().load_private_key(
                 stored_identity["encrypted_private_key_pem"],
                 local_storage_key=local_storage_key,
             )
-            state.identity_public_key_pem = stored_identity["public_key_pem"]
+            identity_public_key_pem = stored_identity["public_key_pem"]
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -124,30 +125,20 @@ async def perform_local_login(username: str, password: str) -> dict:
                 headers={"WWW-Authenticate": "Bearer"},
             ) from exc
 
-    async with httpx.AsyncClient(timeout=10.0) as client:
-        res = await client.post(
-            f"{RELAY_HTTP_BASE_URL}/auth/login",
-            json={"username": clean_username, "password": relay_login_secret},
-        )
-        if res.status_code != 200:
-            detail = res.json().get("detail", "Credenciais inválidas no relé.")
-            raise HTTPException(
-                status_code=res.status_code,
-                detail=detail,
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        token_data = res.json()
+    token_data = await relay_request(
+        "POST",
+        "/auth/login",
+        json_body={"username": clean_username, "password": relay_login_secret},
+    )
 
+    # Só altera o estado depois que o relé confirmou o login (evita estado parcial em caso de erro)
     state.username = clean_username
+    state.identity_private_key = identity_private_key
+    state.identity_public_key_pem = identity_public_key_pem
     state.relay_jwt_token = token_data["access_token"]
-    await restart_relay_listener()
 
-    return {
-        "access_token": state.relay_jwt_token,
-        "token_type": "bearer",
-        "username": state.username,
-        "status": "Login realizado, cofre local desbloqueado e mensagens offline sincronizadas.",
-    }
+    await restart_relay_listener()
+    return _token_response("Login realizado, cofre local desbloqueado e mensagens offline sincronizadas.")
 
 
 async def logout_offline_mode(current_user: str) -> dict:

@@ -1,5 +1,6 @@
 # client/backend/src/backend/serpent_enc.py
 from pyserpent import serpent_cbc_encrypt, serpent_cbc_decrypt
+from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 from .audit import SecurityAuditor
@@ -68,9 +69,9 @@ class SerpentProtocol:
         try:
             h.verify(mac_recebido)
             SecurityAuditor.log_step("SERPENT", "Integridade da mensagem validada (HMAC correto).")
-        except Exception:
+        except InvalidSignature as exc:
             SecurityAuditor.log_step("SERPENT", "FALHA DE INTEGRIDADE!", "Pacote adulterado na rede.")
-            raise ValueError("Falha na validação do HMAC.")
+            raise ValueError("Falha na validação do HMAC.") from exc
 
         plaintext_bytes = serpent_cbc_decrypt(self.enc_key, iv_and_ciphertext)
         

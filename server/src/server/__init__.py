@@ -4,6 +4,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordRequestForm
 
+from .audit import RelayAuditor
 from .auth import create_access_token, get_current_user, hash_password, verify_access_token, verify_password
 from .database import RelayDatabase
 from .schemas import (
@@ -31,21 +32,31 @@ def get_db() -> RelayDatabase:
     return RelayDatabase()
 
 
-@app.get("/")
+@app.get("/", tags=["Status & Auditoria"])
 async def relay_info() -> dict[str, str]:
     return {"service": "Shed Relé Server", "status": "ok"}
 
 
-# Vê se o servidor está ativo e funcionando corretamente
-@app.get("/health")
+@app.get("/health", tags=["Status & Auditoria"])
 async def relay_health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@app.get("/audit-log", tags=["Status & Auditoria"])
+async def relay_audit_log() -> dict[str, list[dict]]:
+    """Retorna o histórico de auditoria do Servidor Relé (visão da rede Zero-Knowledge)."""
+    return {"relay_audit_log": RelayAuditor.get_history()}
 
 
 # =============================================================================
 # Rotas de Autenticação (Registro e Login)
 # =============================================================================
-@app.post("/auth/register", response_model=TokenResponse, status_code=status.HTTP_201_CREATED)
+@app.post(
+    "/auth/register",
+    response_model=TokenResponse,
+    status_code=status.HTTP_201_CREATED,
+    tags=["Autenticação"],
+)
 async def register_user(
     payload: RegisterRequest,
     db: RelayDatabase = Depends(get_db),
@@ -62,28 +73,45 @@ async def register_user(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
+    id_preview = "Registrada (SECP384R1 PEM)" if payload.public_identity_key else "Não enviada"
+    RelayAuditor.log_step(
+        "AUTH",
+        f"Nova conta registrada no Relé: '{username}'",
+        f"Hash Argon2 gerado | Chave de Identidade Pública: {id_preview}",
+    )
+
     token = create_access_token(username)
     return TokenResponse(access_token=token, username=username)
 
 
-@app.post("/auth/login", response_model=TokenResponse)
-async def login_user(
-    payload: LoginRequest,
-    db: RelayDatabase = Depends(get_db),
+def _authenticate_and_issue_token(
+    username: str,
+    password: str,
+    db: RelayDatabase,
 ) -> TokenResponse:
-    """Login via JSON (utilizado pela API local e clientes externos)."""
-    username = payload.username.strip().lower()
-    user = db.get_user(username)
+    normalized = username.strip().lower()
+    user = db.get_user(normalized)
 
-    if user is None or not verify_password(payload.password, user["password_hash"]):
+    if user is None or not verify_password(password, user["password_hash"]):
+        RelayAuditor.log_step("AUTH", f"Tentativa de login recusada para '{normalized}'.")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Usuário ou senha incorretos.",
             headers={"WWW-Authenticate": "Bearer"},
         )
 
-    token = create_access_token(username)
-    return TokenResponse(access_token=token, username=username)
+    RelayAuditor.log_step("AUTH", f"Login validado via Argon2 para '{normalized}'. Token JWT emitido.")
+    token = create_access_token(normalized)
+    return TokenResponse(access_token=token, username=normalized)
+
+
+@app.post("/auth/login", response_model=TokenResponse, tags=["Autenticação"])
+async def login_user(
+    payload: LoginRequest,
+    db: RelayDatabase = Depends(get_db),
+) -> TokenResponse:
+    """Login via JSON (utilizado pela API local e clientes externos)."""
+    return _authenticate_and_issue_token(payload.username, payload.password, db)
 
 
 @app.post("/auth/token", response_model=TokenResponse, include_in_schema=False)
@@ -92,24 +120,13 @@ async def login_swagger_oauth2(
     db: RelayDatabase = Depends(get_db),
 ) -> TokenResponse:
     """Endpoint OAuth2 interno acionado pelo botão 'Authorize' (Username + Password) do Swagger UI."""
-    username = form_data.username.strip().lower()
-    user = db.get_user(username)
-
-    if user is None or not verify_password(form_data.password, user["password_hash"]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Usuário ou senha incorretos.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
-
-    token = create_access_token(username)
-    return TokenResponse(access_token=token, username=username)
+    return _authenticate_and_issue_token(form_data.username, form_data.password, db)
 
 
 # =============================================================================
 # Rotas de Descoberta de Usuários e Gestão de Amizades
 # =============================================================================
-@app.get("/users/search", response_model=list[UserPublic])
+@app.get("/users/search", response_model=list[UserPublic], tags=["Amigos & Descoberta"])
 async def search_users(
     q: str = Query(..., min_length=1, description="Termo de busca pelo username"),
     current_user: str = Depends(get_current_user),
@@ -118,7 +135,7 @@ async def search_users(
     return db.search_users(query=q, exclude_username=current_user)
 
 
-@app.get("/users/{target_username}/identity-key", response_model=UserPublic)
+@app.get("/users/{target_username}/identity-key", response_model=UserPublic, tags=["Amigos & Descoberta"])
 async def get_user_identity_key(
     target_username: str,
     current_user: str = Depends(get_current_user),
@@ -130,6 +147,10 @@ async def get_user_identity_key(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Usuário não encontrado.",
         )
+    RelayAuditor.log_step(
+        "HANDSHAKE",
+        f"'{current_user}' consultou a Chave Pública de Identidade de '{user['username']}' para verificação ECDSA/TOFU.",
+    )
     return {
         "username": user["username"],
         "public_identity_key": user["public_identity_key"],
@@ -137,7 +158,7 @@ async def get_user_identity_key(
     }
 
 
-@app.get("/friends", response_model=FriendsListResponse)
+@app.get("/friends", response_model=FriendsListResponse, tags=["Amigos & Descoberta"])
 async def list_friends(
     current_user: str = Depends(get_current_user),
     db: RelayDatabase = Depends(get_db),
@@ -145,7 +166,7 @@ async def list_friends(
     return db.get_friends_list(current_user)
 
 
-@app.post("/friends/request/{target_username}")
+@app.post("/friends/request/{target_username}", tags=["Amigos & Descoberta"])
 async def send_friend_request(
     target_username: str,
     current_user: str = Depends(get_current_user),
@@ -158,13 +179,18 @@ async def send_friend_request(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    RelayAuditor.log_step(
+        "FRIENDS",
+        f"Solicitação de amizade: '{current_user}' -> '{target_username.strip().lower()}'",
+        f"Status: {resulting_status}",
+    )
     return {
         "status": resulting_status,
         "target": target_username.strip().lower(),
     }
 
 
-@app.post("/friends/accept/{requester_username}")
+@app.post("/friends/accept/{requester_username}", tags=["Amigos & Descoberta"])
 async def accept_friend_request(
     requester_username: str,
     current_user: str = Depends(get_current_user),
@@ -181,13 +207,18 @@ async def accept_friend_request(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    RelayAuditor.log_step(
+        "FRIENDS",
+        f"Amizade confirmada entre '{current_user}' e '{requester_username.strip().lower()}'!",
+        "Roteamento E2EE Friends-Only liberado entre os dois usuários.",
+    )
     return {
         "status": resulting_status,
         "friend": requester_username.strip().lower(),
     }
 
 
-@app.post("/friends/reject/{requester_username}")
+@app.post("/friends/reject/{requester_username}", tags=["Amigos & Descoberta"])
 async def reject_friend_request(
     requester_username: str,
     current_user: str = Depends(get_current_user),
@@ -204,13 +235,17 @@ async def reject_friend_request(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    RelayAuditor.log_step(
+        "FRIENDS",
+        f"'{current_user}' recusou a solicitação de amizade de '{requester_username.strip().lower()}'.",
+    )
     return {
         "status": resulting_status,
         "requester": requester_username.strip().lower(),
     }
 
 
-@app.delete("/friends/{friend_username}")
+@app.delete("/friends/{friend_username}", tags=["Amigos & Descoberta"])
 async def remove_friend(
     friend_username: str,
     current_user: str = Depends(get_current_user),
@@ -222,6 +257,10 @@ async def remove_friend(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Vínculo de amizade não encontrado.",
         )
+    RelayAuditor.log_step(
+        "FRIENDS",
+        f"Vínculo de amizade removido entre '{current_user}' e '{friend_username.strip().lower()}'.",
+    )
     return {"status": "REMOVED", "friend": friend_username.strip().lower()}
 
 
@@ -233,18 +272,21 @@ async def relay(
     websocket: WebSocket,
     username: str,
     token: str | None = Query(default=None),
+    db: RelayDatabase = Depends(get_db),
 ) -> None:
     username = username.strip().lower()
-    db = get_db()
 
-    # Se o usuário está registrado no banco (ou enviou um token), valida o JWT obrigatoriamente
-    registered_user = db.get_user(username)
-    if registered_user is not None or token is not None:
-        token_username = verify_access_token(token) if token else None
-        if token_username != username:
-            await websocket.accept()
-            await websocket.close(code=1008, reason="Não autorizado: token inválido ou ausente")
-            return
+    # Toda conexão exige um JWT válido emitido para uma conta registrada
+    token_username = verify_access_token(token) if token else None
+    if token_username != username or db.get_user(username) is None:
+        RelayAuditor.log_step(
+            "WS",
+            f"Conexão WebSocket BLOQUEADA para '{username}'!",
+            "Motivo: Token JWT ausente ou inválido (tentativa de impersonação).",
+        )
+        await websocket.accept()
+        await websocket.close(code=1008, reason="Não autorizado: token inválido ou ausente")
+        return
 
     await websocket.accept()
 
@@ -253,10 +295,18 @@ async def relay(
         await previous_connection.close(code=1008, reason="Usuário conectado em outra sessão")
 
     connections[username] = websocket
+    RelayAuditor.log_step("WS", f"Túnel WebSocket aberto para '{username}' (ONLINE).")
 
     # Entrega imediatamente mensagens que chegaram enquanto o usuário estava offline
-    for pending_envelope in db.pop_offline_messages(username):
-        await websocket.send_text(pending_envelope)
+    pending_messages = db.pop_offline_messages(username)
+    if pending_messages:
+        RelayAuditor.log_step(
+            "OFFLINE",
+            f"Descarregando fila Store-and-Forward para '{username}'!",
+            f"Total de pacotes cifrados retidos entregues agora: {len(pending_messages)}",
+        )
+        for pending_envelope in pending_messages:
+            await websocket.send_text(pending_envelope)
 
     try:
         while True:
@@ -274,8 +324,12 @@ async def relay(
 
             recipient = recipient.strip().lower()
 
-            # Roteamento Friends-Only: usuários registrados só podem enviar envelopes para amigos aceitos
-            if registered_user is not None and not db.are_friends(username, recipient):
+            # Roteamento Friends-Only: usuários autenticados só podem enviar envelopes para amigos aceitos
+            if not db.are_friends(username, recipient):
+                RelayAuditor.log_step(
+                    "FRIENDS",
+                    f"Envio bloqueado ({username} -> {recipient}): Usuários não são amigos aceitos.",
+                )
                 await websocket.send_text(
                     json.dumps(
                         {
@@ -290,9 +344,11 @@ async def relay(
 
             destination = connections.get(recipient)
             if destination is not None:
+                RelayAuditor.log_envelope_in_transit(envelope, delivered_online=True)
                 await destination.send_text(raw_message)
             else:
                 # Store-and-Forward: guarda o envelope cifrado para quando o destinatário conectar
+                RelayAuditor.log_envelope_in_transit(envelope, delivered_online=False)
                 db.save_offline_message(
                     recipient=recipient,
                     sender=username,
@@ -310,6 +366,7 @@ async def relay(
                     )
                 )
     except WebSocketDisconnect:
+        RelayAuditor.log_step("WS", f"Usuário '{username}' desconectou do túnel WebSocket (OFFLINE).")
         return
     except json.JSONDecodeError:
         await websocket.close(code=1003, reason="Mensagem deve ser JSON válido")

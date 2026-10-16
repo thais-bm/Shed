@@ -61,6 +61,11 @@ local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
+# Shed: bancos SQLite locais (hashes de senha, chaves privadas cifradas, histórico)
+data/
+*.db
+*.db-journal
+
 # Flask stuff:
 instance/
 .webassets-cache

@@ -10,12 +10,12 @@ O projeto é dividido em três camadas independentes para garantir que **chaves 
 
 ```text
 Shed/
-├── server/                     # Servidor Relé Central (FastAPI + WebSocket + SQLite)
+├── server/                     # Servidor Relé Central (FastAPI + WebSocket + SQLite + RelayAuditor)
 ├── client/
-│   ├── backend/                # Daemon/API Local do Usuário (FastAPI + Motor Criptográfico + SQLite)
+│   ├── backend/                # Daemon/API Local do Usuário (FastAPI + Motor Criptográfico + SecurityAuditor)
 │   └── frontend/               # Interface Web do Usuário (React 19 + Vite)
 ├── docs/                       # Documentação arquitetural detalhada
-├── TODO.md                     # Quadro Kanban (DO / DOING / DONE) e Roadmap
+├── TODO.md                     # Quadro Kanban (DONE / DOING / TO-DO) detalhado
 └── start-dev.ps1               # Script de inicialização rápida (Relé + 2 Clientes)
 ```
 
@@ -41,77 +41,103 @@ flowchart LR
 
 ---
 
-## ✅ O Que Já Está Funcionando (100% Operacional e Testado)
+## 📊 Status do Projeto para a Equipe (DONE / DOING / TO-DO)
 
-### 1. Motor Criptográfico (`client/backend/src/backend/`)
-- **Derivação de Senha Dividida (*Split-Key Password Derivation*)**:
+### ✅ 1. JÁ FOI FEITO (DONE — 100% Funcional e Testado)
+
+#### 🔒 Motor Criptográfico (`client/backend/src/backend/`)
+- **Derivação de Senha Dividida (*Split-Key Password Derivation*)** ([`crypto.py`](client/backend/src/backend/crypto.py)):
   - A senha mestre digitada pelo usuário **nunca é enviada ao Servidor Relé**.
   - O cliente aplica `HKDF-SHA256` localmente para dividir a senha em duas chaves de 256 bits matematicamente independentes:
     1. `local_storage_key`: Fica 100% na máquina local para cifrar a Chave Privada de Identidade no banco SQLite.
     2. `relay_login_secret`: Enviada ao Servidor Relé para autenticação com hash **Argon2**.
-- **Chaves de Identidade ECDSA + Handshake ECDH Assinado (`SECP384R1`)**:
+- **Chaves de Identidade ECDSA + Handshake ECDH Assinado (`SECP384R1`)** ([`crypto.py`](client/backend/src/backend/crypto.py) & [`session.py`](client/backend/src/backend/session.py)):
   - Cada conta gera um par de Chaves de Identidade permanente (`ECDSA`) no momento do registro.
-  - A cada nova conversa, um par de chaves efêmero `ECDH` é gerado e **assinado digitalmente com ECDSA-SHA256**, impedindo que o Servidor Relé ou um invasor substitua chaves públicas na rede (*Man-in-the-Middle*).
-- **Fixação de Identidade TOFU (*Trust On First Use*)**:
+  - A cada nova conversa, um par de chaves efêmero `ECDH` é gerado e **assinado digitalmente com ECDSA-SHA256**, impedindo ataques *Man-in-the-Middle* (MitM).
+- **Fixação de Identidade TOFU (*Trust On First Use*)** ([`storage.py`](client/backend/src/backend/storage.py) & [`relay_client.py`](client/backend/src/backend/relay_client.py)):
   - No primeiro contato com um amigo, a API local fixa a Chave de Identidade pública dele na tabela `trusted_identities`. Se o servidor tentar trocar essa chave no futuro, a conexão é bloqueada imediatamente.
-- **Cifragem Simétrica Serpent-CBC + Encrypt-then-MAC (`HMAC-SHA256`)**:
+- **Cifragem Simétrica Serpent-CBC + Encrypt-then-MAC (`HMAC-SHA256`)** ([`serpent_enc.py`](client/backend/src/backend/serpent_enc.py)):
   - O segredo compartilhado do ECDH passa por `HKDF-SHA256` para derivar duas chaves independentes de 256 bits (`enc_key` e `mac_key`).
   - Cada mensagem recebe um IV aleatório de 16 bytes, é cifrada com **Serpent-CBC** e assinada com **HMAC-SHA256**:
     $$\text{Payload} = \underbrace{\text{IV}}_{16\text{B}} \;\parallel\; \underbrace{\text{Texto Cifrado (Serpent)}}_{N \times 16\text{B}} \;\parallel\; \underbrace{\text{HMAC-SHA256}}_{32\text{B}}$$
   - O destinatário valida o lacre HMAC **antes** de tentar decifrar qualquer byte.
-- **Código de Segurança (*Safety Number*)**:
-  - Gera uma impressão digital determinística de 6 blocos de 5 dígitos (`SHA-256` das chaves públicas ordenadas) para conferência fora de banda entre os participantes.
+- **Código de Segurança (*Safety Number*)** ([`session.py`](client/backend/src/backend/session.py)):
+  - Impressão digital determinística de 6 blocos de 5 dígitos (`SHA-256` das chaves públicas ordenadas) para conferência fora de banda.
 
-### 2. Servidor Relé Central (`server/src/server/`)
-- **Autenticação Argon2 + JWT (`OAuth2PasswordBearer`)**:
-  - Registro (`POST /auth/register`) e Login (`POST /auth/login` e botão **Authorize** do Swagger UI).
-  - Proteção do canal WebSocket (`/ws/{username}?token={jwt}`) contra falsificação de identidade.
-- **Descoberta de Contatos e Grafo de Amizades**:
-  - Busca de usuários (`GET /users/search?q=...`) e consulta de chave pública (`GET /users/{user}/identity-key`).
-  - Ciclo completo de amizades: enviar convite (`POST /friends/request/{user}`), aceitar (`POST /friends/accept/{user}`), recusar (`POST /friends/reject/{user}`), remover (`DELETE /friends/{user}`) e listar (`GET /friends`).
-- **Roteamento *Friends-Only***:
-  - Bloqueia automaticamente tentativas de envio de handshakes ou mensagens entre usuários que ainda não são amigos aceitos.
-- **Fila de Mensagens Offline (*Store-and-Forward*)**:
-  - Se o destinatário estiver desconectado, o relé armazena o envelope cifrado na tabela `offline_messages` e entrega automaticamente assim que ele se conectar.
+#### 🌐 Servidor Relé Central (`server/src/server/`)
+- **Autenticação Argon2 + JWT (`OAuth2PasswordBearer`)** ([`auth.py`](server/src/server/auth.py) & [`__init__.py`](server/src/server/__init__.py)):
+  - Registro (`POST /auth/register`), Login (`POST /auth/login` + botão **Authorize** do Swagger UI) e validação obrigatória de JWT no WebSocket (`/ws/{username}?token={jwt}`).
+- **Descoberta de Contatos e Grafo de Amizades** ([`database.py`](server/src/server/database.py)):
+  - Busca (`GET /users/search?q=...`), chave de identidade (`GET /users/{user}/identity-key`) e ciclo completo de amizades (`POST /friends/request/{user}`, `POST /friends/accept/{user}`, `POST /friends/reject/{user}`, `DELETE /friends/{user}`, `GET /friends`).
+- **Roteamento *Friends-Only* e Fila Offline (*Store-and-Forward*)**:
+  - Bloqueia mensagens entre usuários que não são amigos aceitos e armazena pacotes cifrados em `offline_messages` quando o destinatário está desconectado, entregando automaticamente no próximo login.
+- **Auditoria Visual no Terminal do Relé (`RelayAuditor`)** ([`server/src/server/audit.py`](server/src/server/audit.py)):
+  - Exibe em tempo real no terminal do servidor todas as autenticações, conexões WebSocket, trocas de chaves (`KEY_EXCHANGE` com chaves públicas e assinaturas ECDSA) e o raio-X dos pacotes cifrados (`IV` + `Ciphertext Serpent` + `HMAC-SHA256`), provando visualmente que o servidor **não tem acesso ao texto em claro**.
 
-### 3. API Local Modular (`client/backend/src/backend/`)
-- Organizada em módulos independentes:
-  - [`api.py`](client/backend/src/backend/api.py): Inicialização FastAPI e ciclo de vida.
-  - [`routes.py`](client/backend/src/backend/routes.py): Rotas separadas por domínio (`Autenticação`, `Amigos & Descoberta`, `Chat E2EE`).
+#### 🖥️ API Local Modularizada e Otimizada (`client/backend/src/backend/`)
+- Código refatorado, sem duplicações e dividido por responsabilidade:
+  - [`api.py`](client/backend/src/backend/api.py): Inicialização enxuta do FastAPI e ciclo de vida (`lifespan`).
+  - [`routes.py`](client/backend/src/backend/routes.py): Rotas organizadas por domínio (`Autenticação`, `Amigos & Descoberta`, `Chat E2EE`), incluindo proxy completo de amizades (`request`, `accept`, `reject`, `DELETE`, `list`).
   - [`local_auth.py`](client/backend/src/backend/local_auth.py): Registro/login Split-Key, `OAuth2PasswordBearer` e modo offline (`POST /auth/logout`).
-  - [`relay_client.py`](client/backend/src/backend/relay_client.py): Cliente WebSocket em background, validação TOFU e fila de mensagens aguardando término de handshake.
-  - [`state.py`](client/backend/src/backend/state.py) & [`storage.py`](client/backend/src/backend/storage.py): Estado da sessão e persistência SQLite local (`data/<usuario>_history.db`).
+  - [`relay_client.py`](client/backend/src/backend/relay_client.py): Cliente WebSocket resiliente com tabela de despacho (`_ENVELOPE_HANDLERS`), helper HTTP centralizado (`relay_request`), validação TOFU e fila de mensagens aguardando handshake.
+  - [`state.py`](client/backend/src/backend/state.py) & [`storage.py`](client/backend/src/backend/storage.py): Estado da sessão e persistência SQLite local com inicialização em cache (`data/<usuario>_history.db`).
+  - [`audit.py`](client/backend/src/backend/audit.py): `SecurityAuditor` colorido por módulo (`[AUTH]`, `[ECDH]`, `[ECDSA]`, `[SERPENT]`, `[STORAGE]`, `[API]`) para demonstração passo a passo no terminal do cliente.
+- **Correção na Camada de Serviços do Frontend**:
+  - Corrigido o arquivo [`client/frontend/src/services/securityService.js`](client/frontend/src/services/securityService.js) para exportar corretamente `buscarSafetyNumber(contato)`.
+- **Suíte de Testes Automatizados (15 testes passando)**:
+  - `3` testes de integração no Servidor Relé + `12` testes no Cliente Local (incluindo [`test_api_communication.py`](client/backend/tests/test_api_communication.py) que testa todo o fluxo ponta a ponta entre Relé, Alice e Bob).
 
 ---
 
-## 🚀 Como Executar e Testar o Projeto Agora
+### 🟡 2. SENDO FEITO (DOING — Em Andamento pela Equipe)
+
+- [ ] **Integração Completa da Camada de Serviços do Frontend (`client/frontend/src/services/`)**:
+  - Os serviços de chat ([`chatService.js`](client/frontend/src/services/chatService.js)), histórico ([`historyService.js`](client/frontend/src/services/historyService.js)) e segurança ([`securityService.js`](client/frontend/src/services/securityService.js)) já estão prontos.
+  - Falta criar `authService.js` (`/auth/register`, `/auth/login`, `/auth/logout`) e `friendsService.js` (`/users/search`, `/friends`, `/friends/request/{contato}`, `/friends/accept/{contato}`, `/friends/reject/{contato}`, `DELETE /friends/{contato}`) e exportá-los em [`client/frontend/src/services/index.js`](client/frontend/src/services/index.js).
+- [ ] **Construção das Telas no Frontend React (`client/frontend/src/App.jsx`)**:
+  - Substituir o template inicial do Vite em [`App.jsx`](client/frontend/src/App.jsx) pelas telas reais do mensageiro.
+
+---
+
+### 🔴 3. AINDA PRECISA SER FEITO (TO-DO — Próximos Passos)
+
+#### Fase 1: Interface Gráfica em React (`client/frontend/src/`)
+- [ ] **Tela de Login e Cadastro**: Formulário consumindo `POST /auth/login` e `POST /auth/register` da API local.
+- [ ] **Sidebar de Amigos e Busca de Contatos**:
+  - Campo de busca (`GET /users/search?q=...`) com botão para enviar pedido de amizade (`POST /friends/request/{contato}`).
+  - Aba de solicitações pendentes com botões de aceitar (`POST /friends/accept/{contato}`) e recusar (`POST /friends/reject/{contato}`).
+  - Lista de amigos confirmados (`GET /friends`) para abrir a conversa.
+- [ ] **Janela de Chat E2EE**:
+  - Exibição do histórico decifrado (`GET /chat/history/{contato}`).
+  - Input de envio de mensagem (`POST /chat/send/{contato}` — que já inicia o handshake automaticamente se necessário).
+  - Botão/Modal de verificação do **Safety Number** (`GET /chat/safety-number/{contato}`).
+
+#### Fase 2: Atualização em Tempo Real (API Local ➡️ React)
+- [ ] **Polling ou Server-Sent Events (SSE)**:
+  - Adicionar atualização periódica (polling curto em `GET /chat/history/{contato}`) ou um endpoint SSE (`GET /chat/events`) para que novas mensagens recebidas em background apareçam na tela do React sem precisar recarregar.
+
+#### Fase 3: Melhorias Extras de Segurança (Opcional / Pós-MVP)
+- [ ] **Persistência de Sessões Simétricas**: Salvar sessões ECDH ativas no SQLite local ou renegociar automaticamente caso o backend Python seja reiniciado.
+- [ ] **Proteção contra *Replay Attack***: Incluir contador incremental de sequência no payload cifrado.
+
+---
+
+## 🚀 Como Executar e Demonstrar o Projeto (Modo Apresentação)
 
 ### Opção 1: Inicialização com 1 Comando (Recomendado)
 Na raiz do projeto, execute no PowerShell:
 ```powershell
 .\start-dev.ps1
 ```
-Isso abrirá automaticamente 3 terminais:
+Isso abrirá automaticamente **3 janelas de terminal** lado a lado (perfeito para mostrar à professora toda a movimentação criptográfica em tempo real):
+- **Servidor Relé (`:8000`)**: Mostra os logs do `RelayAuditor` (`[AUTH]`, `[WS]`, `[HANDSHAKE]`, `[E2EE-MSG]` com `IV`, `Ciphertext` e `HMAC`, provando que o servidor só vê dados cifrados).
+- **Cliente Local 1 (`:8001`)**: Mostra os logs do `SecurityAuditor` de Bob (geração de chaves, derivação HKDF, cifragem/decifragem Serpent).
+- **Cliente Local 2 (`:8002`)**: Mostra os logs do `SecurityAuditor` de Alice.
+
+Interfaces Swagger UI interativas:
 - **Servidor Relé**: `http://127.0.0.1:8000/docs`
-- **Cliente Local 1**: `http://127.0.0.1:8001/docs`
-- **Cliente Local 2**: `http://127.0.0.1:8002/docs`
-
-### Opção 2: Inicialização Manual
-```powershell
-# Terminal 1 - Servidor Relé (Porta 8000)
-cd server
-uv sync
-uv run uvicorn server:app --reload --host 127.0.0.1 --port 8000
-
-# Terminal 2 - Cliente Local 1 (Porta 8001)
-cd client/backend
-uv sync
-uv run uvicorn backend.api:app --reload --host 127.0.0.1 --port 8001
-
-# Terminal 3 - Cliente Local 2 (Porta 8002)
-cd client/backend
-uv run uvicorn backend.api:app --reload --host 127.0.0.1 --port 8002
-```
+- **Cliente Local 1 (Bob)**: `http://127.0.0.1:8001/docs`
+- **Cliente Local 2 (Alice)**: `http://127.0.0.1:8002/docs`
 
 ### Passo a Passo para Conversar pelo Swagger UI (`/docs`)
 1. **Criar Contas e Logar**:
@@ -122,55 +148,31 @@ uv run uvicorn backend.api:app --reload --host 127.0.0.1 --port 8002
    - Na aba de **Bob (`:8001`)**: Execute `POST /friends/accept/alice`.
 3. **Iniciar Handshake e Trocar Mensagens Cifradas**:
    - Na aba de **Alice (`:8002`)**:
-     - Execute `POST /chat/start/bob` (handshake ECDH assinado com ECDSA).
-     - Confira o código em `GET /chat/safety-number/bob`.
-     - Envie uma mensagem em `POST /chat/send/bob`.
+     - Execute `POST /chat/start/bob` (ou envie direto em `POST /chat/send/bob`, que negocia o handshake automaticamente!).
+     - Confira o código de segurança em `GET /chat/safety-number/bob`.
    - Na aba de **Bob (`:8001`)**:
      - Consulte `GET /chat/history/alice` para ler a mensagem decifrada!
 4. **Testar Mensagens Offline (*Store-and-Forward*)**:
    - Na aba de **Bob (`:8001`)**: Execute `POST /auth/logout` (Bob entra em modo Offline).
-   - Na aba de **Alice (`:8002`)**: Envie mensagens em `POST /chat/send/bob` (o Relé guardará os pacotes cifrados).
-   - Na aba de **Bob (`:8001`)**: Faça login novamente em `POST /auth/login` (ou botão **Authorize**) e consulte `GET /chat/history/alice` — todas as mensagens enviadas enquanto Bob estava offline estarão lá!
+   - Na aba de **Alice (`:8002`)**: Envie mensagens em `POST /chat/send/bob` (o terminal do Relé mostrará o pacote sendo salvo na fila `OFFLINE`).
+   - Na aba de **Bob (`:8001`)**: Faça login novamente em `POST /auth/login` e consulte `GET /chat/history/alice` — todas as mensagens enviadas enquanto Bob estava offline terão sido entregues e decifradas!
 
 ### Executando os Testes Automatizados (`pytest`)
 ```powershell
-# Testes do Servidor Relé (Registro, Login, Amizades, Auth WebSocket e Fila Offline)
+# Testes do Servidor Relé (3 testes: Registro/Login, Amizades e Fila Offline WebSocket)
 cd server
 uv run pytest -v
 
-# Testes do Cliente Local (ECDH, ECDSA, Split-Key, TOFU, Serpent, HMAC, MitM e Comunicação da API)
+# Testes do Cliente Local (12 testes: ECDH, ECDSA, Split-Key, TOFU, Serpent, HMAC, MitM e Fluxo Completo da API)
 cd ../client/backend
 uv run pytest -v
 
-# Para ver o log detalhado passo a passo da comunicação da API no terminal:
+# Para ver o log visual completo (Cliente + Relé) da comunicação ponta a ponta no terminal:
 uv run pytest -s tests/test_api_communication.py
 ```
 
 ---
 
-## 🛠️ O Que Falta Fazer Para o App Ficar 100% Completo
-
-Embora todo o **Backend Local** e o **Servidor Relé** já estejam funcionais e testados, os seguintes itens precisam ser concluídos para finalizar a aplicação:
-
-### 1. Corrigir e Completar a Camada de Serviços do Frontend (`client/frontend/src/services/`)
-- [ ] **Corrigir `securityService.js`**: O arquivo [`client/frontend/src/services/securityService.js`](client/frontend/src/services/securityService.js) atualmente duplica a função `buscarHistorico` por engano em vez de exportar `buscarSafetyNumber(contato)`.
-- [ ] **Adicionar Serviços de Autenticação e Amizades**: Criar `authService.js` (`/auth/register`, `/auth/login`, `/auth/logout`) e `friendsService.js` (`/users/search`, `/friends`, `/friends/request`, `/friends/accept`) para consumir as novas rotas da API local.
-
-### 2. Construir a Interface Gráfica em React (`client/frontend/src/`)
-- [ ] **Substituir o template padrão do Vite (`App.jsx`)**: Atualmente [`App.jsx`](client/frontend/src/App.jsx) ainda contém a tela inicial de contador do Vite.
-- [ ] **Tela de Login e Cadastro**: Formulário para autenticar na API local.
-- [ ] **Painel de Contatos e Amizades**: Barra lateral com lista de amigos, busca de usuários (`GET /users/search`) e botões para aceitar solicitações pendentes.
-- [ ] **Janela de Conversa (Chat)**: Listagem das mensagens (`GET /chat/history/{contato}`), campo de envio (`POST /chat/send/{contato}`) e modal exibindo o **Safety Number** (`GET /chat/safety-number/{contato}`).
-
-### 3. Notificações em Tempo Real da API Local para o React
-- [ ] **Server-Sent Events (SSE) ou WebSocket Local**: Atualmente, quando uma mensagem chega do Relé, a API local decifra e salva no SQLite, mas o React precisa consultar `GET /chat/history/{contato}` (polling) para atualizar a tela. Adicionar uma rota `GET /chat/events` (SSE) na API local permitirá atualizar a tela do React instantaneamente.
-
-### 4. Persistência de Sessão e Proteção contra *Replay Attack* (Melhorias Futuras)
-- [ ] **Persistência de Sessões Simétricas**: Salvar as chaves de sessão ativas (`active_sessions`) cifradas no SQLite local para que, mesmo se o processo Python local for fechado e reaberto, não seja necessário renegociar o handshake ECDH.
-- [ ] **Contador de Sequência (*Anti-Replay*)**: Incluir um número de sequência incremental dentro do payload cifrado para impedir que um atacante reenvie pacotes antigos capturados na rede.
-
----
-
 📚 **Documentação Adicional**:
 - [Arquitetura de Autenticação, Descoberta e Gestão de Amigos](docs/AUTHENTICATION_AND_DISCOVERY.md)
-- [Quadro Kanban (DO / DOING / DONE) e Lista de Tarefas](TODO.md)
+- [Quadro Kanban (DONE / DOING / TO-DO) e Lista de Tarefas](TODO.md)

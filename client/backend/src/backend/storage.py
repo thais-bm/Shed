@@ -5,6 +5,9 @@ from .audit import SecurityAuditor
 
 
 class LocalStorage:
+    # Caminhos de banco cujo schema já foi criado neste processo (evita CREATE TABLE a cada mensagem)
+    _initialized_paths: set[str] = set()
+
     def __init__(self, owner_username: str, db_dir: str | Path = "data"):
         """
         Cada usuário rodando o cliente local terá seu próprio banco de dados.
@@ -17,7 +20,11 @@ class LocalStorage:
         db_dir_path.mkdir(parents=True, exist_ok=True)
 
         self.db_path = db_dir_path / f"{self.owner}_history.db"
-        self._init_db()
+
+        path_key = str(self.db_path.resolve())
+        if path_key not in LocalStorage._initialized_paths or not self.db_path.exists():
+            self._init_db()
+            LocalStorage._initialized_paths.add(path_key)
 
     def _init_db(self):
         """Cria as tabelas caso seja a primeira vez abrindo o aplicativo."""
