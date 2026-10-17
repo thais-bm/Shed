@@ -7,8 +7,33 @@
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
+  --app-background: #f7f9fc;
+  --surface: #ffffff;
+  --app-border: #e6eaf0;
+  --muted-text: #8490a4;
+  --brand-start: #5b5ce2;
+  --brand-end: #8b5cf6;
+  --message-outgoing: #5b5ce2;
+  --safety-background: #eef0ff;
+  --safety-text: #4849b5;
+  --auth-background: radial-gradient(circle at top right, #e8e9ff, #f7f9fc 45%);
 }
 
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; }
 button, input { font: inherit; }
+
+body[data-theme="dark"] {
+  color: #f3eef8;
+  background: #17151c;
+  --app-background: #17151c;
+  --surface: #211b29;
+  --app-border: #3b3047;
+  --muted-text: #b2a8bd;
+  --brand-start: #8b5cf6;
+  --brand-end: #c084fc;
+  --message-outgoing: #7e22ce;
+  --safety-background: #38234d;
+  --safety-text: #d8b4fe;
+  --auth-background: radial-gradient(circle at top right, #38234d, #17151c 48%);
+}

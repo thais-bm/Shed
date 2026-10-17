@@ -20,6 +20,9 @@ import CloseRoundedIcon from "@mui/icons-material/CloseRounded";
 import LogoutRoundedIcon from "@mui/icons-material/LogoutRounded";
 import SearchRoundedIcon from "@mui/icons-material/SearchRounded";
 import PersonAddAltRoundedIcon from "@mui/icons-material/PersonAddAltRounded";
+import DarkModeRoundedIcon from "@mui/icons-material/DarkModeRounded";
+import LightModeRoundedIcon from "@mui/icons-material/LightModeRounded";
+import { useAppTheme } from "../../theme/ThemeContext.js";
 
 const initials = (name) => name.slice(0, 2).toUpperCase();
 
@@ -37,6 +40,7 @@ export default function Sidebar({
   onLogout,
 }) {
   const [query, setQuery] = useState("");
+  const { mode, toggleMode } = useAppTheme();
   return (
     <Box className="sidebar">
       <Stack
@@ -55,11 +59,18 @@ export default function Sidebar({
             </Typography>
           </Box>
         </Stack>
-        <Tooltip title="Sair">
-          <IconButton onClick={onLogout}>
-            <LogoutRoundedIcon />
-          </IconButton>
-        </Tooltip>
+        <Stack direction="row" spacing={0.5}>
+          <Tooltip title={mode === "dark" ? "Usar modo claro" : "Usar modo escuro"}>
+            <IconButton onClick={toggleMode} aria-label="Alternar tema">
+              {mode === "dark" ? <LightModeRoundedIcon /> : <DarkModeRoundedIcon />}
+            </IconButton>
+          </Tooltip>
+          <Tooltip title="Sair">
+            <IconButton onClick={onLogout}>
+              <LogoutRoundedIcon />
+            </IconButton>
+          </Tooltip>
+        </Stack>
       </Stack>
       <Divider />
       <Box p={2}>
