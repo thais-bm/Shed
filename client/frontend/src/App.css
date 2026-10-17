@@ -45,9 +45,27 @@
   box-shadow: var(--surface-shadow);
 }
 
-.chat-window { display: flex; flex-direction: column; min-width: 0; }
+.chat-window { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .chat-header { padding: 18px 28px; background: var(--surface); border-bottom: 1px solid var(--app-border); }
-.messages { flex: 1; padding: 28px; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+.messages {
+  flex: 1;
+  min-height: 0;
+  padding: 28px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+.messages::-webkit-scrollbar { width: 10px; }
+.messages::-webkit-scrollbar-track { background: var(--scrollbar-track); }
+.messages::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border: 3px solid var(--scrollbar-track);
+  border-radius: 999px;
+}
+.messages::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
 .message-row { display: flex; }
 .message-row.outgoing { justify-content: flex-end; }
 .message-bubble { padding: 10px 14px; max-width: min(620px, 72%); border-radius: 16px !important; background: var(--surface) !important; }

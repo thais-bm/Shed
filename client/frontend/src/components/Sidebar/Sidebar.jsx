@@ -93,7 +93,12 @@ export default function Sidebar({
           }}
         />
         {query && searchResults.length > 0 && (
-          <PaperResults results={searchResults} onAdd={onAdd} />
+          <PaperResults
+            results={searchResults}
+            friends={friends}
+            pendingSent={pendingSent}
+            onAdd={onAdd}
+          />
         )}
       </Box>
       {pendingReceived.length > 0 && (
@@ -189,11 +194,14 @@ export default function Sidebar({
   );
 }
 
-function PaperResults({ results, onAdd }) {
+function PaperResults({ results, friends, pendingSent, onAdd }) {
   return (
     <Box className="search-results">
       {results.map((user) => {
         const name = typeof user === "string" ? user : user.username;
+        const isFriend = friends.includes(name);
+        const isPending = pendingSent.includes(name);
+        const isUnavailable = isFriend || isPending;
         return (
           <Stack
             key={name}
@@ -210,8 +218,9 @@ function PaperResults({ results, onAdd }) {
               size="small"
               startIcon={<PersonAddAltRoundedIcon />}
               onClick={() => onAdd(name)}
+              disabled={isUnavailable}
             >
-              Adicionar
+              {isFriend ? "Amigos" : isPending ? "Pendente" : "Adicionar"}
             </Button>
           </Stack>
         );

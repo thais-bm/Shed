@@ -16,6 +16,9 @@
   --message-outgoing: #5b5ce2;
   --safety-background: #eef0ff;
   --safety-text: #4849b5;
+  --scrollbar-track: #f0f2f7;
+  --scrollbar-thumb: #c3c9d8;
+  --scrollbar-thumb-hover: #aab2c5;
   --auth-background: radial-gradient(circle at top right, #e8e9ff, #f7f9fc 45%);
 }
 
@@ -35,5 +38,8 @@ body[data-theme="dark"] {
   --message-outgoing: #7e22ce;
   --safety-background: #38234d;
   --safety-text: #d8b4fe;
+  --scrollbar-track: #2b2435;
+  --scrollbar-thumb: #68577a;
+  --scrollbar-thumb-hover: #806b96;
   --auth-background: radial-gradient(circle at top right, #38234d, #17151c 48%);
 }
