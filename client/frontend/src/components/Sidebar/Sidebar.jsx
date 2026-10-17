@@ -30,6 +30,7 @@ export default function Sidebar({
   username,
   friends,
   pendingReceived,
+  pendingSent,
   activeContact,
   onSelect,
   onSearch,
@@ -133,6 +134,16 @@ export default function Sidebar({
           ))}
         </Box>
       )}
+      {pendingSent.length > 0 && (
+        <Box px={2} pb={1}>
+          <Typography className="section-label">Convites enviados</Typography>
+          {pendingSent.map((contact) => (
+            <Typography key={contact} variant="body2" color="text.secondary" py={0.5}>
+              Aguardando resposta de {contact}
+            </Typography>
+          ))}
+        </Box>
+      )}
       <Box px={2}>
         <Typography className="section-label">Conversas</Typography>
       </Box>
@@ -163,9 +174,15 @@ export default function Sidebar({
           </ListItemButton>
         ))}
         {friends.length === 0 && (
-          <Typography color="text.secondary" variant="body2" px={2} py={2}>
-            Adicione amigos para começar uma conversa.
-          </Typography>
+          <Box px={2} py={2}>
+            <Typography color="text.primary" variant="body2" fontWeight={600}>
+              Nenhum amigo ainda
+            </Typography>
+            <Typography color="text.secondary" variant="body2" mt={0.5}>
+              Busque uma pessoa acima e clique em Adicionar. Quando ela aceitar
+              o convite, aparecerá aqui.
+            </Typography>
+          </Box>
         )}
       </List>
     </Box>

@@ -115,6 +115,11 @@ async def enviar_mensagem(
         if not sessao:
             await send_handshake_init(contato, current_user)
         state.pending_handshake_messages.setdefault(contato, []).append(payload.text)
+        LocalStorage(current_user).save_message(
+            contact_username=contato,
+            is_sender=True,
+            content=payload.text,
+        )
         return {
             "status": (
                 f"Aguardando handshake ECDH com '{contato}'. "

@@ -124,6 +124,7 @@ export default function ChatPage() {
         username={username}
         friends={data.friends}
         pendingReceived={data.pendingReceived}
+        pendingSent={data.pendingSent}
         activeContact={activeContact}
         onSelect={selectContact}
         searchResults={searchResults}

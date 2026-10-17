@@ -129,6 +129,16 @@ Na raiz do projeto, execute no PowerShell:
 ```powershell
 .\start-dev.ps1
 ```
+
+O script também inicia duas interfaces React independentes para permitir testar
+uma conversa entre dois usuários na mesma máquina:
+
+- Frontend 1: `http://127.0.0.1:5173` usa a API local `:8001`.
+- Frontend 2: `http://127.0.0.1:5174` usa a API local `:8002`.
+
+Abra uma janela para cada usuário. Não use a mesma porta do frontend para as
+duas contas, pois cada usuário precisa manter seu próprio WebSocket conectado
+ao relé.
 Isso abrirá automaticamente **3 janelas de terminal** lado a lado (perfeito para mostrar à professora toda a movimentação criptográfica em tempo real):
 - **Servidor Relé (`:8000`)**: Mostra os logs do `RelayAuditor` (`[AUTH]`, `[WS]`, `[HANDSHAKE]`, `[E2EE-MSG]` com `IV`, `Ciphertext` e `HMAC`, provando que o servidor só vê dados cifrados).
 - **Cliente Local 1 (`:8001`)**: Mostra os logs do `SecurityAuditor` de Bob (geração de chaves, derivação HKDF, cifragem/decifragem Serpent).

@@ -125,7 +125,6 @@ async def flush_pending_handshake_messages(contato: str, ws) -> None:
     if not pendentes or not sessao or not sessao.is_established or not state.username:
         return
 
-    db = LocalStorage(state.username)
     for texto in pendentes:
         mensagem = {
             "type": "CHAT_MESSAGE",
@@ -134,7 +133,6 @@ async def flush_pending_handshake_messages(contato: str, ws) -> None:
             "payload": sessao.encrypt(texto).hex(),
         }
         await ws.send(json.dumps(mensagem))
-        db.save_message(contact_username=contato, is_sender=True, content=texto)
         SecurityAuditor.log_step(
             "API",
             f"Mensagem pendente cifrada e enviada para '{contato}' após conclusão do handshake.",
