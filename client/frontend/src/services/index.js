@@ -15,3 +15,14 @@ export {
 export { buscarHistorico } from "./historyService.js";
 
 export { buscarSafetyNumber } from "./securityService.js";
+
+export { entrar, cadastrar, sair } from "./authService.js";
+
+export {
+  buscarUsuarios,
+  buscarAmigos,
+  solicitarAmizade,
+  aceitarAmizade,
+  recusarAmizade,
+  removerAmigo,
+} from "./friendsService.js";

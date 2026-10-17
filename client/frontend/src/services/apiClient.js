@@ -58,15 +58,35 @@ async function request(path, options = {}) {
           ? (data.detail ?? data.message)
           : data;
 
-      const message =
-        typeof detail === "string" && detail.trim()
-          ? detail
-          : `A API retornou o erro HTTP ${response.status}.`;
+      const message = formatApiError(detail, response.status);
 
       throw new ApiError(message, {
         status: response.status,
         detail: data,
       });
+    }
+
+    function formatApiError(detail, status) {
+      if (typeof detail === "string" && detail.trim()) {
+        return detail;
+      }
+
+      if (Array.isArray(detail)) {
+        const messages = detail
+          .map((item) => {
+            if (typeof item === "string") return item;
+            if (typeof item?.msg === "string") {
+              const field = Array.isArray(item.loc) ? item.loc.at(-1) : null;
+              return field ? `${field}: ${item.msg}` : item.msg;
+            }
+            return null;
+          })
+          .filter(Boolean);
+
+        if (messages.length > 0) return messages.join(" ");
+      }
+
+      return `A API retornou o erro HTTP ${status}.`;
     }
 
     return data;
@@ -98,6 +118,12 @@ export const apiClient = Object.freeze({
     return request(path, {
       method: "POST",
       body: JSON.stringify(body),
+    });
+  },
+
+  delete(path) {
+    return request(path, {
+      method: "DELETE",
     });
   },
 });
