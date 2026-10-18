@@ -10,10 +10,10 @@ Este arquivo consolida o estado atual do desenvolvimento do **Shed**, fornecendo
 +-----------------------------------------------+-----------------------------------------------+-----------------------------------------------+
 |               DONE (Concluído)                |             DOING (Em Andamento)              |                TO-DO (A Fazer)                |
 +-----------------------------------------------+-----------------------------------------------+-----------------------------------------------+
-| [x] Handshake ECDH + ECDSA (SECP384R1)        | [~] Criar authService.js e friendsService.js  | [ ] Tela de Login e Cadastro em React         |
-| [x] Split-Key Password Derivation (HKDF)      | [~] Substituir template em App.jsx            | [ ] Sidebar de Amigos, Busca e Convites       |
-| [x] Cifragem Serpent-CBC + HMAC-SHA256        | [~] Integração visual com API Local           | [ ] Janela de Chat + Modal Safety Number      |
-| [x] Fixação de Identidade TOFU no SQLite      |                                               | [ ] Atualização em tempo real (Polling / SSE) |
+| [x] Handshake ECDH + ECDSA (SECP384R1)        |                                               |                                               |
+| [x] Split-Key Password Derivation (HKDF)      |                                               |                                               |
+| [x] Cifragem Serpent-CBC + HMAC-SHA256        |                                               |                                               |
+| [x] Fixação de Identidade TOFU no SQLite      |                                               |                                               |
 | [x] Algoritmo de Safety Number (6x5 dígitos)  |                                               | [ ] Persistência de sessões ECDH no SQLite    |
 | [x] Relé Central: Argon2 + JWT + Friends-Only |                                               | [ ] Contador de sequência Anti-Replay         |
 | [x] Fila Store-and-Forward (Mensagens Offline)|                                               |                                               |
@@ -21,6 +21,10 @@ Este arquivo consolida o estado atual do desenvolvimento do **Shed**, fornecendo
 | [x] Auditoria Visual (Client + RelayAuditor)  |                                               |                                               |
 | [x] Correção do bug em securityService.js     |                                               |                                               |
 | [x] Script start-dev.ps1 + 15 testes pytest   |                                               |                                               |
+| [x] Serviços do Frontend React                |                                               |                                               |
+| [x] Interface principal conectada à API       |                                               |                                               |
+| [x] Componentes visuais de autenticação e chat|                                               |                                               |
+| [x] Polling de atualização em tempo real      |                                               |                                               |
 +-----------------------------------------------+-----------------------------------------------+-----------------------------------------------+
 ```
 
@@ -57,6 +61,10 @@ Este arquivo consolida o estado atual do desenvolvimento do **Shed**, fornecendo
   - Resposta enxuta em `POST /chat/send/{contato}` (`{"status": "Mensagem cifrada e enviada."}`) para facilitar o consumo pelo Frontend.
 - [x] **Correção do `securityService.js` (`client/frontend/src/services/securityService.js`)**:
   - Corrigida a função `buscarSafetyNumber(contato)` e exportada no `index.js`.
+- [x] **Interface React de autenticação, amizades e chat**:
+  - Implementados login/registro, busca de usuários, convites, lista de amigos, conversas e modal de Safety Number.
+  - Adicionados estados "Pendente" e "Já são amigos" no botão de adicionar amizade.
+  - Adicionada barra de scroll estilizada para conversas com muitas mensagens.
 - [x] **Script de Inicialização (`start-dev.ps1`) e Testes Automatizados**:
   - `15` testes automatizados passando (`3` no servidor + `12` no cliente local, incluindo teste de comunicação ponta a ponta `test_api_communication.py`).
 
@@ -64,32 +72,11 @@ Este arquivo consolida o estado atual do desenvolvimento do **Shed**, fornecendo
 
 ## 🟡 2. DOING (Em Andamento)
 
-- [ ] **Completar a Camada de Serviços do Frontend (`client/frontend/src/services/`)**:
-  - Criar `authService.js` para consumir `/auth/register`, `/auth/login` e `/auth/logout`.
-  - Criar `friendsService.js` para consumir `/users/search`, `/friends`, `/friends/request/{contato}`, `/friends/accept/{contato}`, `/friends/reject/{contato}` e `DELETE /friends/{contato}`.
-  - Exportar os novos módulos em `client/frontend/src/services/index.js`.
-- [ ] **Construção da Interface Principal em React (`client/frontend/src/App.jsx`)**:
-  - Substituir o contador padrão do Vite pela interface do mensageiro conectado à API local.
+- Nenhuma tarefa em andamento no momento.
 
 ---
 
 ## 🔴 3. TO-DO (Próximas Tarefas para Finalizar o App)
-
-### Fase 1: Componentes Visuais do Frontend React (`client/frontend/src/`)
-- [ ] **Tela de Autenticação (Login / Registro)**:
-  - Formulário de entrada de `username` e `password` conectado ao `authService.js`.
-- [ ] **Painel Lateral de Contatos e Amizades**:
-  - Barra de pesquisa de usuários (`GET /users/search?q=...`) com botão "Adicionar Amigo".
-  - Lista de solicitações pendentes (`incoming_requests`) com botões "Aceitar" e "Recusar".
-  - Lista de amigos confirmados (`friends`) para selecionar o chat ativo.
-- [ ] **Janela de Conversa (Chat E2EE)**:
-  - Listagem de mensagens enviadas e recebidas (`GET /chat/history/{contato}`).
-  - Barra de digitação e envio (`POST /chat/send/{contato}`).
-  - Modal/Badge exibindo os 6 blocos do **Safety Number** (`GET /chat/safety-number/{contato}`).
-
-### Fase 2: Atualização em Tempo Real (API Local ➡️ React)
-- [ ] **Polling ou Server-Sent Events (SSE)**:
-  - Implementar polling periódico no React ou endpoint SSE `GET /chat/events` na API local para atualizar a janela de conversa assim que uma mensagem for decifrada em background.
 
 ### Fase 3: Evoluções Criptográficas (Pós-MVP)
 - [ ] **Persistência de Sessões Simétricas**:
