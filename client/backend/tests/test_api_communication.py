@@ -117,6 +117,12 @@ def test_fluxo_completo_de_comunicacao_da_api(tmp_path, monkeypatch):
     )
     assert alice_session.is_established
 
+    # Reabrir o chat com uma sessão ativa não deve iniciar outro handshake.
+    res_start_again = client.post("/chat/start/bob")
+    assert res_start_again.status_code == 200
+    assert res_start_again.json()["status"] == "Sessão E2EE já estabelecida."
+    assert len(fake_ws.sent_envelopes) == 1
+
     # =========================================================================
     # 4. Alice consulta o Safety Number via API: GET /chat/safety-number/bob
     # =========================================================================

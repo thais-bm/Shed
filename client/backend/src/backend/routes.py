@@ -90,7 +90,12 @@ async def iniciar_chat(
     current_user: str = Depends(require_authenticated_user),
 ):
     """O React chama esta rota quando o usuário clica num contato para iniciar o handshake."""
-    await send_handshake_init(contato.strip().lower(), current_user)
+    contato = contato.strip().lower()
+    sessao = state.active_sessions.get(contato)
+    if sessao and sessao.is_established:
+        return {"status": "Sessão E2EE já estabelecida.", "signed": state.identity_private_key is not None}
+
+    await send_handshake_init(contato, current_user)
     return {"status": "Convite ECDH enviado.", "signed": state.identity_private_key is not None}
 
 
