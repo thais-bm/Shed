@@ -1,3 +1,4 @@
+# client/backend/src/backend/session.py
 import hashlib
 from .crypto import ECDHManager, IdentityKeyManager
 from .serpent_enc import SerpentProtocol
@@ -15,8 +16,28 @@ class SecureSession:
         self.private_key, self.public_key = self.ecdh.generate_key_pair()
         # A chave efêmera não muda durante a sessão: exporta para PEM uma única vez
         self._public_key_pem = self.ecdh.export_public_key(self.public_key)
-        self.serpent = None
+        self.session_key: bytes | None = None
+        self.serpent: SerpentProtocol | None = None
         self.peer_public_key_pem: bytes | None = None  # Retém a chave para a impressão digital
+
+    @classmethod
+    def from_persisted_state(
+        cls,
+        session_key: bytes,
+        my_pub_pem: bytes,
+        peer_pub_pem: bytes,
+    ) -> "SecureSession":
+        """Restaura uma sessão já estabelecida a partir do cofre SQLite local sem refazer ECDH."""
+        instance = cls.__new__(cls)
+        instance.ecdh = None
+        instance.identity_manager = IdentityKeyManager()
+        instance.private_key = None
+        instance.public_key = None
+        instance._public_key_pem = my_pub_pem
+        instance.peer_public_key_pem = peer_pub_pem
+        instance.session_key = session_key
+        instance.serpent = SerpentProtocol(session_key)
+        return instance
 
     @property
     def is_established(self) -> bool:
@@ -51,34 +72,23 @@ class SecureSession:
                 signature=signature,
             )
 
-        # 2. Guarda a chave pública recebida do par
+        # 2. Guarda a chave pública recebida do par e deriva a chave simétrica
         self.peer_public_key_pem = peer_public_key_pem
-
         peer_public_key = self.ecdh.load_public_key(peer_public_key_pem)
-        session_key = self.ecdh.derive_sym_key(self.private_key, peer_public_key)
-        self.serpent = SerpentProtocol(session_key)
+        self.session_key = self.ecdh.derive_sym_key(self.private_key, peer_public_key)
+        self.serpent = SerpentProtocol(self.session_key)
 
     def get_safety_number(self) -> str:
-        """
-        Gera uma impressão digital (Fingerprint) determinística da sessão.
-
-        Ordena as duas chaves públicas em ordem lexicográfica e calcula um hash SHA-256.
-        Garante que Alice e Bob obtenham o mesmo código exato, independentemente
-        de quem iniciou o handshake. Se houver um MitM, os números divergem.
-        """
         if not self.is_established or self.peer_public_key_pem is None:
             raise RuntimeError("A sessão precisa estar estabelecida para gerar o Safety Number.")
 
         my_pub = self.get_public_key()
-
-        # Ordenação garante: Hash(A + B) == Hash(B + A)
         chaves_ordenadas = sorted([my_pub, self.peer_public_key_pem])
         digest = hashlib.sha256(chaves_ordenadas[0] + chaves_ordenadas[1]).digest()
 
-        # Formata os primeiros 12 bytes do digest em 6 blocos numéricos de 5 dígitos
         blocos = []
         for i in range(0, 12, 2):
-            numero = int.from_bytes(digest[i: i + 2], byteorder="big") % 100000
+            numero = int.from_bytes(digest[i : i + 2], byteorder="big") % 100000
             blocos.append(f"{numero:05d}")
 
         return " ".join(blocos)

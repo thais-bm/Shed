@@ -93,7 +93,7 @@ def _build_key_exchange_envelope(tipo: str, contato: str, sessao: SecureSession)
 
 
 async def _establish_from_envelope(sessao: SecureSession, remetente: str, envelope: dict) -> None:
-    """Valida a assinatura ECDSA (com TOFU) do envelope recebido e deriva a chave de sessão Serpent."""
+    """Valida a assinatura ECDSA (com TOFU) do envelope recebido, deriva a chave de sessão Serpent e salva no SQLite."""
     peer_id_pub = await fetch_and_pin_peer_identity_key(remetente)
     sig_hex = envelope.get("signature")
     sessao.establish_session(
@@ -101,10 +101,25 @@ async def _establish_from_envelope(sessao: SecureSession, remetente: str, envelo
         signature=bytes.fromhex(sig_hex) if sig_hex else None,
         peer_identity_public_key_pem=peer_id_pub,
     )
-
+    if state.username and state.local_storage_key and sessao.session_key and sessao.peer_public_key_pem:
+        LocalStorage(state.username).save_established_session(
+            contact_username=remetente,
+            session_key=sessao.session_key,
+            my_ephemeral_pub_pem=sessao.get_public_key(),
+            peer_ephemeral_pub_pem=sessao.peer_public_key_pem,
+            local_storage_key=state.local_storage_key,
+        )
 
 async def send_handshake_init(contato: str, current_user: str) -> SecureSession:
-    """Cria uma nova SecureSession, assina a chave efêmera ECDH com ECDSA e envia KEY_EXCHANGE_INIT."""
+    """
+    Garante que o KEY_EXCHANGE_INIT só é criado e enviado se ainda NÃO existir
+    nenhuma sessão (estabelecida ou aguardando resposta) para este contato.
+    """
+    contato = contato.strip().lower()
+    sessao_existente = state.active_sessions.get(contato)
+    if sessao_existente is not None:
+        return sessao_existente
+
     if not state.relay_websocket:
         raise HTTPException(status_code=503, detail="Sem conexão com o relé.")
 
@@ -114,18 +129,18 @@ async def send_handshake_init(contato: str, current_user: str) -> SecureSession:
     await state.relay_websocket.send(json.dumps(convite))
     return sessao
 
-
 async def flush_pending_handshake_messages(contato: str, ws) -> None:
     """
-    Assim que o handshake ECDH termina, cifra com Serpent e envia todas as
-    mensagens que estavam aguardando na fila local.
+    Assim que o handshake ECDH termina:
+    1. Cifra e envia todas as mensagens de saída que aguardavam na fila local.
+    2. Decifra e salva mensagens recebidas que tenham chegado antes da conclusão.
     """
-    pendentes = state.pending_handshake_messages.pop(contato, [])
     sessao = state.active_sessions.get(contato)
-    if not pendentes or not sessao or not sessao.is_established or not state.username:
+    if not sessao or not sessao.is_established or not state.username:
         return
 
-    for texto in pendentes:
+    pendentes_saida = state.pending_handshake_messages.pop(contato, [])
+    for texto in pendentes_saida:
         mensagem = {
             "type": "CHAT_MESSAGE",
             "from": state.username,
@@ -138,6 +153,14 @@ async def flush_pending_handshake_messages(contato: str, ws) -> None:
             f"Mensagem pendente cifrada e enviada para '{contato}' após conclusão do handshake.",
         )
 
+    pendentes_entrada = state.pending_incoming_ciphertexts.pop(contato, [])
+    for payload_hex in pendentes_entrada:
+        try:
+            texto_limpo = sessao.decrypt(bytes.fromhex(payload_hex))
+            SecurityAuditor.log_step("API", f"Mensagem retida de {contato} decifrada:", texto_limpo)
+            LocalStorage(state.username).save_message(contact_username=contato, is_sender=False, content=texto_limpo)
+        except Exception as exc:
+            SecurityAuditor.log_step("API", f"Erro ao decifrar mensagem retida de {contato}: {exc}")
 
 # =============================================================================
 # Handlers de Envelopes Recebidos do Relé
@@ -155,6 +178,26 @@ async def _handle_offline_queued(ws, remetente: str, envelope: dict) -> None:
 
 
 async def _handle_key_exchange_init(ws, remetente: str, envelope: dict) -> None:
+    sessao_atual = state.active_sessions.get(remetente)
+
+    # 1. Se a sessão já está estabelecida, ignora qualquer novo pedido de handshake!
+    if sessao_atual and sessao_atual.is_established:
+        SecurityAuditor.log_step(
+            "API",
+            f"Convite KEY_EXCHANGE_INIT de '{remetente}' ignorado: Sessão E2EE já estabelecida anteriormente.",
+        )
+        return
+
+    # 2. Resolução de Glare (ambos enviaram KEY_EXCHANGE_INIT simultaneamente):
+    # O usuário com menor username em ordem alfabética mantém o seu INIT e espera o REPLY do outro.
+    if sessao_atual and not sessao_atual.is_established and state.username:
+        if state.username < remetente:
+            SecurityAuditor.log_step(
+                "API",
+                f"Handshake simultâneo detectado com '{remetente}'. Mantendo nosso convite prioritário.",
+            )
+            return
+
     SecurityAuditor.log_step("API", f"Convite de E2EE recebido de {remetente}")
     nova_sessao = SecureSession()
     await _establish_from_envelope(nova_sessao, remetente, envelope)
@@ -164,16 +207,28 @@ async def _handle_key_exchange_init(ws, remetente: str, envelope: dict) -> None:
     await ws.send(json.dumps(resposta))
     await flush_pending_handshake_messages(remetente, ws)
 
-
 async def _handle_key_exchange_reply(ws, remetente: str, envelope: dict) -> None:
-    SecurityAuditor.log_step("API", f"Resposta de E2EE recebida de {remetente}")
     sessao = state.active_sessions.get(remetente)
-    if not sessao:
+    if not sessao or sessao.is_established:
         return
+
+    SecurityAuditor.log_step("API", f"Resposta de E2EE recebida de {remetente}")
     try:
         await _establish_from_envelope(sessao, remetente, envelope)
     except ValueError:
-        # Handshake comprometido: descarta a sessão para não cifrar com chaves não autenticadas
+        state.active_sessions.pop(remetente, None)
+        raise
+    await flush_pending_handshake_messages(remetente, ws)
+
+async def _handle_key_exchange_reply(ws, remetente: str, envelope: dict) -> None:
+    sessao = state.active_sessions.get(remetente)
+    if not sessao or sessao.is_established:
+        return
+
+    SecurityAuditor.log_step("API", f"Resposta de E2EE recebida de {remetente}")
+    try:
+        await _establish_from_envelope(sessao, remetente, envelope)
+    except ValueError:
         state.active_sessions.pop(remetente, None)
         raise
     await flush_pending_handshake_messages(remetente, ws)
@@ -184,16 +239,15 @@ async def _handle_chat_message(ws, remetente: str, envelope: dict) -> None:
     if not sessao or not sessao.is_established:
         SecurityAuditor.log_step(
             "API",
-            f"Mensagem cifrada de '{remetente}' recebida sem sessão ativa.",
-            "Inicie ou renegocie o handshake ECDH.",
+            f"Mensagem cifrada de '{remetente}' recebida antes da conclusão do handshake. Retida no buffer local.",
         )
+        if "payload" in envelope:
+            state.pending_incoming_ciphertexts.setdefault(remetente, []).append(envelope["payload"])
         return
 
-    # O motor Serpent valida o HMAC e decifra (ValueError se o pacote foi adulterado)
     texto_limpo = sessao.decrypt(bytes.fromhex(envelope["payload"]))
     SecurityAuditor.log_step("API", f"Nova mensagem recebida de {remetente}", texto_limpo)
     LocalStorage(state.username).save_message(contact_username=remetente, is_sender=False, content=texto_limpo)
-
 
 _ENVELOPE_HANDLERS = {
     "ERROR": _handle_error,

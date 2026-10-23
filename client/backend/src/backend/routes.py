@@ -78,9 +78,13 @@ async def recusar_solicitacao_amizade(contato: str, headers: dict[str, str] = De
 
 @friends_router.delete("/friends/{contato}")
 async def remover_amigo(contato: str, headers: dict[str, str] = Depends(get_relay_auth_headers)):
-    return await relay_request("DELETE", f"/friends/{contato}", headers=headers)
-
-
+    contato_limpo = contato.strip().lower()
+    res = await relay_request("DELETE", f"/friends/{contato_limpo}", headers=headers)
+    # Remove também a sessão E2EE salva para que, se voltarem a ser amigos no futuro, possam fazer novo handshake
+    state.active_sessions.pop(contato_limpo, None)
+    if state.username:
+        LocalStorage(state.username).delete_established_session(contato_limpo)
+    return res
 # =============================================================================
 # Rotas de Chat E2EE (/chat/*)
 # =============================================================================
@@ -92,8 +96,15 @@ async def iniciar_chat(
     """O React chama esta rota quando o usuário clica num contato para iniciar o handshake."""
     contato = contato.strip().lower()
     sessao = state.active_sessions.get(contato)
+
     if sessao and sessao.is_established:
         return {"status": "Sessão E2EE já estabelecida.", "signed": state.identity_private_key is not None}
+
+    if sessao and not sessao.is_established:
+        return {
+            "status": "Convite ECDH já enviado anteriormente. Aguardando resposta do contato.",
+            "signed": state.identity_private_key is not None,
+        }
 
     await send_handshake_init(contato, current_user)
     return {"status": "Convite ECDH enviado.", "signed": state.identity_private_key is not None}

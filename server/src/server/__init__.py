@@ -342,6 +342,28 @@ async def relay(
                 )
                 continue
 
+            # =================================================================
+            # TRAVA DE HANDSHAKE ÚNICO ENTRE AMIGOS NO SERVIDOR RELÉ
+            # =================================================================
+            envelope_type = str(envelope.get("type", "UNKNOWN")).upper()
+
+            if envelope_type in ("KEY_EXCHANGE_INIT", "KEY_EXCHANGE_REPLY"):
+                if db.is_handshake_completed(username, recipient):
+                    RelayAuditor.log_step(
+                        "HANDSHAKE",
+                        f"Handshake repetido bloqueado ({username} -> {recipient}): A dupla já realizou o handshake único.",
+                    )
+                    continue
+
+                # Quando a resposta final (KEY_EXCHANGE_REPLY) passa pelo Relé,
+                # consolidamos no banco que o handshake entre os dois amigos está concluído!
+                if envelope_type == "KEY_EXCHANGE_REPLY":
+                    db.mark_handshake_completed(username, recipient)
+                    RelayAuditor.log_step(
+                        "HANDSHAKE",
+                        f"Handshake único consolidado definitivamente entre '{username}' e '{recipient}'!",
+                    )
+
             destination = connections.get(recipient)
             if destination is not None:
                 RelayAuditor.log_envelope_in_transit(envelope, delivered_online=True)
@@ -353,6 +375,7 @@ async def relay(
                     recipient=recipient,
                     sender=username,
                     envelope_json=raw_message,
+                    envelope_type=envelope_type,
                 )
                 await websocket.send_text(
                     json.dumps(
@@ -361,7 +384,7 @@ async def relay(
                             "from": "relay",
                             "to": username,
                             "recipient": recipient,
-                            "envelope_type": envelope.get("type", "UNKNOWN"),
+                            "envelope_type": envelope_type,
                         }
                     )
                 )

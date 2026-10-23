@@ -27,6 +27,7 @@ class ClientState:
     def __init__(self) -> None:
         self.username: str | None = None
         self.relay_jwt_token: str | None = None
+        self.local_storage_key: bytes | None = None
         self.identity_private_key = None
         self.identity_public_key_pem: str | None = None
 
@@ -34,6 +35,8 @@ class ClientState:
         self.active_sessions: dict[str, SecureSession] = {}
         # Fila local de mensagens aguardando término do handshake ECDH
         self.pending_handshake_messages: dict[str, list[str]] = {}
+        # Fila local de payloads cifrados recebidos enquanto o handshake ainda estava em andamento
+        self.pending_incoming_ciphertexts: dict[str, list[str]] = {}
 
         # Conexão e tarefa de background do WebSocket com o Relé
         self.relay_websocket = None

@@ -56,6 +56,15 @@ class LocalStorage:
                     first_seen DATETIME DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS established_sessions (
+                    contact_username TEXT PRIMARY KEY,
+                    encrypted_session_key BLOB NOT NULL,
+                    my_ephemeral_pub_pem TEXT NOT NULL,
+                    peer_ephemeral_pub_pem TEXT NOT NULL,
+                    established_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
             conn.commit()
         SecurityAuditor.log_step("STORAGE", "Banco de dados local inicializado.", f"Arquivo: {self.db_path}")
 
@@ -192,3 +201,86 @@ class LocalStorage:
             rows = cursor.fetchall()
 
         return [dict(row) for row in rows]
+
+
+# -------------------------------------------------------------------------
+    # Cofre de Sessões E2EE Estabelecidas (Garante Handshake Único Permanente)
+    # -------------------------------------------------------------------------
+    def save_established_session(
+        self,
+        contact_username: str,
+        session_key: bytes,
+        my_ephemeral_pub_pem: bytes,
+        peer_ephemeral_pub_pem: bytes,
+        local_storage_key: bytes,
+    ) -> None:
+        from .serpent_enc import SerpentProtocol
+
+        contact = contact_username.strip().lower()
+        vault = SerpentProtocol(local_storage_key)
+        encrypted_key = vault.encrypt_message(session_key.hex())
+
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''
+                INSERT OR REPLACE INTO established_sessions
+                (contact_username, encrypted_session_key, my_ephemeral_pub_pem, peer_ephemeral_pub_pem)
+                VALUES (?, ?, ?, ?)
+                ''',
+                (
+                    contact,
+                    encrypted_key,
+                    my_ephemeral_pub_pem.decode("utf-8"),
+                    peer_ephemeral_pub_pem.decode("utf-8"),
+                ),
+            )
+            conn.commit()
+        SecurityAuditor.log_step(
+            "STORAGE",
+            f"Sessão E2EE definitiva com '{contact}' cifrada e salva no SQLite local.",
+        )
+
+    def load_all_established_sessions(self, local_storage_key: bytes) -> dict:
+        from .serpent_enc import SerpentProtocol
+        from .session import SecureSession
+
+        vault = SerpentProtocol(local_storage_key)
+        sessions = {}
+
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT contact_username, encrypted_session_key, my_ephemeral_pub_pem, peer_ephemeral_pub_pem
+                FROM established_sessions
+                """
+            )
+            rows = cursor.fetchall()
+
+        for row in rows:
+            contact = row["contact_username"]
+            try:
+                session_key_hex = vault.decrypt_message(row["encrypted_session_key"])
+                sessions[contact] = SecureSession.from_persisted_state(
+                    session_key=bytes.fromhex(session_key_hex),
+                    my_pub_pem=row["my_ephemeral_pub_pem"].encode("utf-8"),
+                    peer_pub_pem=row["peer_ephemeral_pub_pem"].encode("utf-8"),
+                )
+            except Exception as exc:
+                SecurityAuditor.log_step("STORAGE", f"Falha ao restaurar sessão com '{contact}': {exc}")
+
+        if sessions:
+            SecurityAuditor.log_step(
+                "STORAGE",
+                f"{len(sessions)} sessão(ões) E2EE restaurada(s) do cofre local (sem necessidade de novo handshake).",
+            )
+        return sessions
+
+    def delete_established_session(self, contact_username: str) -> None:
+        contact = contact_username.strip().lower()
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM established_sessions WHERE contact_username = ?", (contact,))
+            conn.commit()

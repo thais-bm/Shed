@@ -61,6 +61,7 @@ class RelayDatabase:
                     requester_username TEXT NOT NULL,
                     addressee_username TEXT NOT NULL,
                     status TEXT CHECK(status IN ('PENDING', 'ACCEPTED')) NOT NULL DEFAULT 'PENDING',
+                    handshake_completed INTEGER NOT NULL DEFAULT 0,
                     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(requester_username, addressee_username),
@@ -69,6 +70,14 @@ class RelayDatabase:
                 )
                 """
             )
+
+            # Migração segura: adiciona a coluna caso o banco relay.db já exista de execuções anteriores
+            cursor.execute("PRAGMA table_info(friendships)")
+            existing_columns = [row["name"] for row in cursor.fetchall()]
+            if "handshake_completed" not in existing_columns:
+                cursor.execute(
+                    "ALTER TABLE friendships ADD COLUMN handshake_completed INTEGER NOT NULL DEFAULT 0"
+                )
 
             # Fila de envelopes E2EE para destinatários desconectados (Store-and-Forward)
             cursor.execute(
@@ -318,17 +327,72 @@ class RelayDatabase:
             return cursor.fetchone() is not None
 
     # -------------------------------------------------------------------------
-    # Fila de Mensagens Offline (Store-and-Forward)
+    # Utilitarios para Handshake
     # -------------------------------------------------------------------------
-    def save_offline_message(self, recipient: str, sender: str, envelope_json: str) -> None:
+    def is_handshake_completed(self, user_a: str, user_b: str) -> bool:
+        """Verifica se o handshake E2EE já foi concluído entre esta dupla de amigos."""
+        user_a = user_a.strip().lower()
+        user_b = user_b.strip().lower()
         with self._connect() as conn:
             cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT handshake_completed
+                FROM friendships
+                WHERE ((requester_username = ? AND addressee_username = ?)
+                    OR (requester_username = ? AND addressee_username = ?))
+                  AND status = 'ACCEPTED'
+                LIMIT 1
+                """,
+                (user_a, user_b, user_b, user_a),
+            )
+            row = cursor.fetchone()
+            return bool(row and row["handshake_completed"])
+
+    def mark_handshake_completed(self, user_a: str, user_b: str) -> None:
+        """Marca permanentemente que o handshake entre os dois amigos foi concluído."""
+        user_a = user_a.strip().lower()
+        user_b = user_b.strip().lower()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE friendships
+                SET handshake_completed = 1, updated_at = CURRENT_TIMESTAMP
+                WHERE ((requester_username = ? AND addressee_username = ?)
+                    OR (requester_username = ? AND addressee_username = ?))
+                  AND status = 'ACCEPTED'
+                """,
+                (user_a, user_b, user_b, user_a),
+            )
+            conn.commit()
+
+    # -------------------------------------------------------------------------
+    # Fila de Mensagens Offline (Store-and-Forward)
+    # -------------------------------------------------------------------------
+    def save_offline_message(self, recipient: str, sender: str, envelope_json: str, envelope_type: str = "") -> None:
+        recipient = recipient.strip().lower()
+        sender = sender.strip().lower()
+        with self._connect() as conn:
+            cursor = conn.cursor()
+            # Se for pacote de handshake, substitui eventual handshake anterior pendente do mesmo remetente
+            # para evitar que o destinatário receba múltiplos KEY_EXCHANGE_INIT ao ficar online
+            if envelope_type in ("KEY_EXCHANGE_INIT", "KEY_EXCHANGE_REPLY"):
+                cursor.execute(
+                    """
+                    DELETE FROM offline_messages
+                    WHERE recipient_username = ?
+                      AND sender_username = ?
+                      AND json_extract(envelope_json, '$.type') = ?
+                    """,
+                    (recipient, sender, envelope_type),
+                )
             cursor.execute(
                 """
                 INSERT INTO offline_messages (recipient_username, sender_username, envelope_json)
                 VALUES (?, ?, ?)
                 """,
-                (recipient.strip().lower(), sender.strip().lower(), envelope_json),
+                (recipient, sender, envelope_json),
             )
             conn.commit()
 
@@ -355,3 +419,5 @@ class RelayDatabase:
                 )
                 conn.commit()
             return [row["envelope_json"] for row in rows]
+
+

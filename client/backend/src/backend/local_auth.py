@@ -86,9 +86,11 @@ async def register_local_account(payload: AuthCredentialsPayload) -> dict:
     LocalStorage(clean_username).save_my_identity(encrypted_priv_pem, pub_pem)
 
     state.username = clean_username
+    state.local_storage_key = local_storage_key
     state.identity_private_key = priv_key
     state.identity_public_key_pem = pub_pem
     state.relay_jwt_token = token_data["access_token"]
+    state.active_sessions = LocalStorage(clean_username).load_all_established_sessions(local_storage_key)
 
     await restart_relay_listener()
     return _token_response("Conta registrada com Split-Key e Identidade ECDSA.", public_identity_key=pub_pem)
@@ -133,9 +135,11 @@ async def perform_local_login(username: str, password: str) -> dict:
 
     # Só altera o estado depois que o relé confirmou o login (evita estado parcial em caso de erro)
     state.username = clean_username
+    state.local_storage_key = local_storage_key
     state.identity_private_key = identity_private_key
     state.identity_public_key_pem = identity_public_key_pem
     state.relay_jwt_token = token_data["access_token"]
+    state.active_sessions = LocalStorage(clean_username).load_all_established_sessions(local_storage_key)
 
     await restart_relay_listener()
     return _token_response("Login realizado, cofre local desbloqueado e mensagens offline sincronizadas.")
