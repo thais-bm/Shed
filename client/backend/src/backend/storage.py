@@ -62,9 +62,16 @@ class LocalStorage:
                     encrypted_session_key BLOB NOT NULL,
                     my_ephemeral_pub_pem TEXT NOT NULL,
                     peer_ephemeral_pub_pem TEXT NOT NULL,
-                    established_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    established_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    send_seq INTEGER NOT NULL DEFAULT 0,
+                    recv_seq INTEGER NOT NULL DEFAULT 0
                 )
             ''')
+            # Migração: bancos criados antes da proteção anti-replay não têm os contadores
+            existing_cols = {row[1] for row in cursor.execute("PRAGMA table_info(established_sessions)")}
+            for col in ("send_seq", "recv_seq"):
+                if col not in existing_cols:
+                    cursor.execute(f"ALTER TABLE established_sessions ADD COLUMN {col} INTEGER NOT NULL DEFAULT 0")
             conn.commit()
         SecurityAuditor.log_step("STORAGE", "Banco de dados local inicializado.", f"Arquivo: {self.db_path}")
 
@@ -130,23 +137,25 @@ class LocalStorage:
                 )
                 conn.commit()
                 SecurityAuditor.log_step(
-                    "STORAGE",
-                    f"TOFU: Chave de Identidade de '{contact}' fixada no banco local.",
+                    "TOFU",
+                    f"Primeiro contato com '{contact}': Chave de Identidade FIXADA no banco local.",
+                    f"Fingerprint fixado: {SecurityAuditor.fingerprint(normalized_pem + chr(10))} (qualquer mudança futura será bloqueada)",
                 )
                 return True
 
             if row["public_identity_key_pem"].strip() != normalized_pem:
                 SecurityAuditor.log_step(
-                    "STORAGE",
-                    f"ALERTA MITM (TOFU): Chave de Identidade de '{contact}' divergiu da chave salva!",
+                    "TOFU",
+                    f"ALERTA MITM: Chave de Identidade de '{contact}' divergiu da chave salva!",
                 )
                 raise ValueError(
                     f"ALERTA MITM (TOFU): A Chave de Identidade de '{contact}' mudou! Conexão bloqueada."
                 )
 
             SecurityAuditor.log_step(
-                "STORAGE",
-                f"TOFU: Chave de Identidade de '{contact}' confere com o registro local.",
+                "TOFU",
+                f"Chave de Identidade de '{contact}' confere com a fixada no primeiro contato.",
+                f"Fingerprint: {SecurityAuditor.fingerprint(normalized_pem + chr(10))}",
             )
             return True
 
@@ -213,11 +222,13 @@ class LocalStorage:
         my_ephemeral_pub_pem: bytes,
         peer_ephemeral_pub_pem: bytes,
         local_storage_key: bytes,
+        send_seq: int = 0,
+        recv_seq: int = 0,
     ) -> None:
         from .serpent_enc import SerpentProtocol
 
         contact = contact_username.strip().lower()
-        vault = SerpentProtocol(local_storage_key)
+        vault = SerpentProtocol(local_storage_key, audit=False)  # cofre: o conteúdo nunca vai para os logs
         encrypted_key = vault.encrypt_message(session_key.hex())
 
         with sqlite3.connect(self.db_path) as conn:
@@ -225,14 +236,17 @@ class LocalStorage:
             cursor.execute(
                 '''
                 INSERT OR REPLACE INTO established_sessions
-                (contact_username, encrypted_session_key, my_ephemeral_pub_pem, peer_ephemeral_pub_pem)
-                VALUES (?, ?, ?, ?)
+                (contact_username, encrypted_session_key, my_ephemeral_pub_pem, peer_ephemeral_pub_pem,
+                 send_seq, recv_seq)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ''',
                 (
                     contact,
                     encrypted_key,
                     my_ephemeral_pub_pem.decode("utf-8"),
                     peer_ephemeral_pub_pem.decode("utf-8"),
+                    send_seq,
+                    recv_seq,
                 ),
             )
             conn.commit()
@@ -245,7 +259,7 @@ class LocalStorage:
         from .serpent_enc import SerpentProtocol
         from .session import SecureSession
 
-        vault = SerpentProtocol(local_storage_key)
+        vault = SerpentProtocol(local_storage_key, audit=False)  # cofre: o conteúdo nunca vai para os logs
         sessions = {}
 
         with sqlite3.connect(self.db_path) as conn:
@@ -253,7 +267,8 @@ class LocalStorage:
             cursor = conn.cursor()
             cursor.execute(
                 """
-                SELECT contact_username, encrypted_session_key, my_ephemeral_pub_pem, peer_ephemeral_pub_pem
+                SELECT contact_username, encrypted_session_key, my_ephemeral_pub_pem, peer_ephemeral_pub_pem,
+                       send_seq, recv_seq
                 FROM established_sessions
                 """
             )
@@ -267,6 +282,8 @@ class LocalStorage:
                     session_key=bytes.fromhex(session_key_hex),
                     my_pub_pem=row["my_ephemeral_pub_pem"].encode("utf-8"),
                     peer_pub_pem=row["peer_ephemeral_pub_pem"].encode("utf-8"),
+                    send_seq=row["send_seq"],
+                    recv_seq=row["recv_seq"],
                 )
             except Exception as exc:
                 SecurityAuditor.log_step("STORAGE", f"Falha ao restaurar sessão com '{contact}': {exc}")
@@ -277,6 +294,16 @@ class LocalStorage:
                 f"{len(sessions)} sessão(ões) E2EE restaurada(s) do cofre local (sem necessidade de novo handshake).",
             )
         return sessions
+
+    def update_session_counters(self, contact_username: str, send_seq: int, recv_seq: int) -> None:
+        """Persiste os contadores anti-replay para que sobrevivam a reinícios do backend."""
+        contact = contact_username.strip().lower()
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                "UPDATE established_sessions SET send_seq = ?, recv_seq = ? WHERE contact_username = ?",
+                (send_seq, recv_seq, contact),
+            )
+            conn.commit()
 
     def delete_established_session(self, contact_username: str) -> None:
         contact = contact_username.strip().lower()

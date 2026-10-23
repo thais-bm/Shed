@@ -73,11 +73,22 @@ async def register_user(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
-    id_preview = "Registrada (SECP384R1 PEM)" if payload.public_identity_key else "Não enviada"
+    id_preview = (
+        f"fingerprint {RelayAuditor.fingerprint(payload.public_identity_key)} (SECP384R1, só a parte PÚBLICA)"
+        if payload.public_identity_key
+        else "Não enviada"
+    )
+    RelayAuditor.banner(
+        f"REGISTRO DE CONTA '{username}' NO RELÉ",
+        "O Relé guarda apenas: hash Argon2 do segredo de login + chave pública de identidade.",
+    )
     RelayAuditor.log_step(
         "AUTH",
         f"Nova conta registrada no Relé: '{username}'",
-        f"Hash Argon2 gerado | Chave de Identidade Pública: {id_preview}",
+        f"Recebido (relay_login_secret): fingerprint {RelayAuditor.fingerprint(payload.password)} (NÃO é a senha do usuário)\n"
+        f"Armazenado (hash Argon2)     : {pwd_hash[:40]}...\n"
+        f"Chave de Identidade Pública  : {id_preview}\n"
+        "O Relé NUNCA recebe: a senha, a local_storage_key ou qualquer chave privada.",
     )
 
     token = create_access_token(username)

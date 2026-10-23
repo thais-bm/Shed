@@ -8,23 +8,25 @@ Este arquivo consolida o estado atual do desenvolvimento do **Shed**, fornecendo
 
 ```text
 +-----------------------------------------------+-----------------------------------------------+-----------------------------------------------+
-|               DONE (Concluído)                |             DOING (Em Andamento)              |                TO-DO (A Fazer)                |
+|                DONE (Concluído)               |              DOING (Em Andamento)             |                TO-DO (A Fazer)                |
 +-----------------------------------------------+-----------------------------------------------+-----------------------------------------------+
 | [x] Handshake ECDH + ECDSA (SECP384R1)        |                                               |                                               |
 | [x] Split-Key Password Derivation (HKDF)      |                                               |                                               |
 | [x] Cifragem Serpent-CBC + HMAC-SHA256        |                                               |                                               |
 | [x] Fixação de Identidade TOFU no SQLite      |                                               |                                               |
-| [x] Algoritmo de Safety Number (6x5 dígitos)  |                                               | [ ] Persistência de sessões ECDH no SQLite    |
-| [x] Relé Central: Argon2 + JWT + Friends-Only |                                               | [ ] Contador de sequência Anti-Replay         |
+| [x] Algoritmo de Safety Number (6x5 dígitos)  |                                               |                                               |
+| [x] Relé Central: Argon2 + JWT + Friends-Only |                                               |                                               |
 | [x] Fila Store-and-Forward (Mensagens Offline)|                                               |                                               |
 | [x] Refatoração modular da API Local          |                                               |                                               |
 | [x] Auditoria Visual (Client + RelayAuditor)  |                                               |                                               |
 | [x] Correção do bug em securityService.js     |                                               |                                               |
-| [x] Script start-dev.ps1 + 15 testes pytest   |                                               |                                               |
+| [x] Script start-dev.ps1 + testes pytest      |                                               |                                               |
 | [x] Serviços do Frontend React                |                                               |                                               |
 | [x] Interface principal conectada à API       |                                               |                                               |
 | [x] Componentes visuais de autenticação e chat|                                               |                                               |
 | [x] Polling de atualização em tempo real      |                                               |                                               |
+| [x] Persistência de sessões ECDH no SQLite    |                                               |                                               |
+| [x] Proteção Anti-Replay (seq + timestamp)    |                                               |                                               |
 +-----------------------------------------------+-----------------------------------------------+-----------------------------------------------+
 ```
 
@@ -43,6 +45,12 @@ Este arquivo consolida o estado atual do desenvolvimento do **Shed**, fornecendo
   - Cifragem simétrica Serpent em modo CBC com IV aleatório de 16 bytes e autenticação `HMAC-SHA256` (*Encrypt-then-MAC*).
 - [x] **Safety Number (`session.py`)**:
   - Cache da chave pública local em memória e geração determinística de 6 blocos de 5 dígitos para verificação fora de banda.
+
+- [x] **Persistência de Sessões ECDH (`storage.py`, `local_auth.py`)**:
+  - Chave de sessão cifrada com `local_storage_key` na tabela `established_sessions` e restaurada no login via `SecureSession.from_persisted_state` (sem novo handshake após reiniciar o backend).
+- [x] **Proteção contra *Replay Attack* (`session.py`)**:
+  - Cada mensagem carrega, dentro do payload autenticado (HMAC), `seq` (contador crescente por direção), `ts` (timestamp) e `sid` (identificador do remetente, que barra mensagens refletidas).
+  - O receptor rejeita `seq` repetido ou menor (`ReplayError`) e timestamps no futuro; os contadores são persistidos no SQLite e sobrevivem a reinícios.
 
 ### Servidor Relé Central (`server/src/server/`)
 - [x] **Autenticação Argon2 + JWT (`auth.py`, `__init__.py`)**:
@@ -66,7 +74,7 @@ Este arquivo consolida o estado atual do desenvolvimento do **Shed**, fornecendo
   - Adicionados estados "Pendente" e "Já são amigos" no botão de adicionar amizade.
   - Adicionada barra de scroll estilizada para conversas com muitas mensagens.
 - [x] **Script de Inicialização (`start-dev.ps1`) e Testes Automatizados**:
-  - `15` testes automatizados passando (`3` no servidor + `12` no cliente local, incluindo teste de comunicação ponta a ponta `test_api_communication.py`).
+  - `24` testes automatizados passando (`3` no servidor + `21` no cliente local, incluindo teste de comunicação ponta a ponta `test_api_communication.py`).
 
 ---
 
@@ -76,10 +84,9 @@ Este arquivo consolida o estado atual do desenvolvimento do **Shed**, fornecendo
 
 ---
 
-## 🔴 3. TO-DO (Próximas Tarefas para Finalizar o App)
+## 🔴 3. TO-DO (Próximas Tarefas)
 
-### Fase 3: Evoluções Criptográficas (Pós-MVP)
-- [ ] **Persistência de Sessões Simétricas**:
-  - Salvar sessões ECDH ativas no SQLite local ou renegociar automaticamente caso o servidor local seja reiniciado.
-- [ ] **Proteção contra *Replay Attack***:
-  - Incluir número de sequência incremental e timestamp autenticado dentro do payload cifrado.
+- Nenhuma tarefa obrigatória pendente no backend. Ideias futuras (opcionais):
+  - Rotação periódica da chave de sessão (*forward secrecy* em sessões de longa duração).
+  - Janela deslizante anti-replay para tolerar entrega fora de ordem (hoje a sequência é estritamente crescente).
+  - Testes automatizados para o frontend.

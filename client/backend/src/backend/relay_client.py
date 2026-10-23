@@ -6,7 +6,7 @@ import websockets
 from fastapi import HTTPException
 
 from .audit import SecurityAuditor
-from .session import SecureSession
+from .session import ReplayError, SecureSession
 from .state import RELAY_HTTP_BASE_URL, RELAY_WS_BASE_URL, state
 from .storage import LocalStorage
 
@@ -101,6 +101,13 @@ async def _establish_from_envelope(sessao: SecureSession, remetente: str, envelo
         signature=bytes.fromhex(sig_hex) if sig_hex else None,
         peer_identity_public_key_pem=peer_id_pub,
     )
+    SecurityAuditor.log_step(
+        "HANDSHAKE",
+        f"SESSÃO E2EE ESTABELECIDA com '{remetente}'.",
+        f"Chave de sessão: fingerprint {SecurityAuditor.fingerprint(sessao.session_key)} (deve ser igual nos dois lados)\n"
+        f"Safety Number  : {sessao.get_safety_number()} (conferir fora de banda)\n"
+        "Handshake único: a sessão será salva cifrada no SQLite e reaproveitada.",
+    )
     if state.username and state.local_storage_key and sessao.session_key and sessao.peer_public_key_pem:
         LocalStorage(state.username).save_established_session(
             contact_username=remetente,
@@ -109,6 +116,12 @@ async def _establish_from_envelope(sessao: SecureSession, remetente: str, envelo
             peer_ephemeral_pub_pem=sessao.peer_public_key_pem,
             local_storage_key=state.local_storage_key,
         )
+
+def persist_session_counters(contato: str, sessao: SecureSession) -> None:
+    """Grava os contadores anti-replay da sessão no SQLite local."""
+    if state.username:
+        LocalStorage(state.username).update_session_counters(contato, sessao.send_seq, sessao.recv_seq)
+
 
 async def send_handshake_init(contato: str, current_user: str) -> SecureSession:
     """
@@ -123,10 +136,21 @@ async def send_handshake_init(contato: str, current_user: str) -> SecureSession:
     if not state.relay_websocket:
         raise HTTPException(status_code=503, detail="Sem conexão com o relé.")
 
+    SecurityAuditor.banner(
+        f"CHAVES 3/4 - HANDSHAKE COM '{contato}' (iniciado por '{current_user}')",
+        "ECDH autenticado por ECDSA: troca só de chaves PÚBLICAS, assinadas.",
+    )
     sessao = SecureSession()
     state.active_sessions[contato] = sessao
     convite = _build_key_exchange_envelope("KEY_EXCHANGE_INIT", contato, sessao)
     await state.relay_websocket.send(json.dumps(convite))
+    SecurityAuditor.log_step(
+        "HANDSHAKE",
+        f"KEY_EXCHANGE_INIT enviado para '{contato}' pelo Relé.",
+        f"Chave efêmera ECDH enviada: fingerprint {SecurityAuditor.fingerprint(sessao.get_public_key())}\n"
+        f"Assinada com ECDSA: {'sim' if 'signature' in convite else 'NÃO (sem identidade local)'}\n"
+        "Aguardando KEY_EXCHANGE_REPLY.",
+    )
     return sessao
 
 async def flush_pending_handshake_messages(contato: str, ws) -> None:
@@ -147,6 +171,7 @@ async def flush_pending_handshake_messages(contato: str, ws) -> None:
             "to": contato,
             "payload": sessao.encrypt(texto).hex(),
         }
+        persist_session_counters(contato, sessao)
         await ws.send(json.dumps(mensagem))
         SecurityAuditor.log_step(
             "API",
@@ -157,6 +182,7 @@ async def flush_pending_handshake_messages(contato: str, ws) -> None:
     for payload_hex in pendentes_entrada:
         try:
             texto_limpo = sessao.decrypt(bytes.fromhex(payload_hex))
+            persist_session_counters(contato, sessao)
             SecurityAuditor.log_step("API", f"Mensagem retida de {contato} decifrada:", texto_limpo)
             LocalStorage(state.username).save_message(contact_username=contato, is_sender=False, content=texto_limpo)
         except Exception as exc:
@@ -198,7 +224,11 @@ async def _handle_key_exchange_init(ws, remetente: str, envelope: dict) -> None:
             )
             return
 
-    SecurityAuditor.log_step("API", f"Convite de E2EE recebido de {remetente}")
+    SecurityAuditor.banner(
+        f"CHAVES 3/4 - HANDSHAKE RECEBIDO DE '{remetente}'",
+        "Validando assinatura ECDSA e identidade (TOFU) antes de aceitar a chave efêmera.",
+    )
+    SecurityAuditor.log_step("HANDSHAKE", f"KEY_EXCHANGE_INIT recebido de '{remetente}'.")
     nova_sessao = SecureSession()
     await _establish_from_envelope(nova_sessao, remetente, envelope)
     state.active_sessions[remetente] = nova_sessao
@@ -212,27 +242,13 @@ async def _handle_key_exchange_reply(ws, remetente: str, envelope: dict) -> None
     if not sessao or sessao.is_established:
         return
 
-    SecurityAuditor.log_step("API", f"Resposta de E2EE recebida de {remetente}")
+    SecurityAuditor.log_step("HANDSHAKE", f"KEY_EXCHANGE_REPLY recebido de '{remetente}'.")
     try:
         await _establish_from_envelope(sessao, remetente, envelope)
     except ValueError:
         state.active_sessions.pop(remetente, None)
         raise
     await flush_pending_handshake_messages(remetente, ws)
-
-async def _handle_key_exchange_reply(ws, remetente: str, envelope: dict) -> None:
-    sessao = state.active_sessions.get(remetente)
-    if not sessao or sessao.is_established:
-        return
-
-    SecurityAuditor.log_step("API", f"Resposta de E2EE recebida de {remetente}")
-    try:
-        await _establish_from_envelope(sessao, remetente, envelope)
-    except ValueError:
-        state.active_sessions.pop(remetente, None)
-        raise
-    await flush_pending_handshake_messages(remetente, ws)
-
 
 async def _handle_chat_message(ws, remetente: str, envelope: dict) -> None:
     sessao = state.active_sessions.get(remetente)
@@ -245,7 +261,12 @@ async def _handle_chat_message(ws, remetente: str, envelope: dict) -> None:
             state.pending_incoming_ciphertexts.setdefault(remetente, []).append(envelope["payload"])
         return
 
-    texto_limpo = sessao.decrypt(bytes.fromhex(envelope["payload"]))
+    try:
+        texto_limpo = sessao.decrypt(bytes.fromhex(envelope["payload"]))
+    except ReplayError as exc:
+        SecurityAuditor.log_step("API", f"REPLAY/mensagem inválida de '{remetente}' descartada.", str(exc))
+        return
+    persist_session_counters(remetente, sessao)
     SecurityAuditor.log_step("API", f"Nova mensagem recebida de {remetente}", texto_limpo)
     LocalStorage(state.username).save_message(contact_username=remetente, is_sender=False, content=texto_limpo)
 

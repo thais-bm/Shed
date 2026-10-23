@@ -11,7 +11,7 @@ from .local_auth import (
     register_local_account,
     require_authenticated_user,
 )
-from .relay_client import relay_request, send_handshake_init
+from .relay_client import persist_session_counters, relay_request, send_handshake_init
 from .state import AuthCredentialsPayload, MessagePayload, state
 from .storage import LocalStorage
 
@@ -85,6 +85,8 @@ async def remover_amigo(contato: str, headers: dict[str, str] = Depends(get_rela
     if state.username:
         LocalStorage(state.username).delete_established_session(contato_limpo)
     return res
+
+
 # =============================================================================
 # Rotas de Chat E2EE (/chat/*)
 # =============================================================================
@@ -149,6 +151,7 @@ async def enviar_mensagem(
         "to": contato,
         "payload": sessao.encrypt(payload.text).hex(),
     }
+    persist_session_counters(contato, sessao)
     await state.relay_websocket.send(json.dumps(mensagem))
 
     LocalStorage(current_user).save_message(contact_username=contato, is_sender=True, content=payload.text)

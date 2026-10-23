@@ -84,41 +84,23 @@ flowchart LR
   - [`audit.py`](client/backend/src/backend/audit.py): `SecurityAuditor` colorido por módulo (`[AUTH]`, `[ECDH]`, `[ECDSA]`, `[SERPENT]`, `[STORAGE]`, `[API]`) para demonstração passo a passo no terminal do cliente.
 - **Correção na Camada de Serviços do Frontend**:
   - Corrigido o arquivo [`client/frontend/src/services/securityService.js`](client/frontend/src/services/securityService.js) para exportar corretamente `buscarSafetyNumber(contato)`.
-- **Suíte de Testes Automatizados (15 testes passando)**:
-  - `3` testes de integração no Servidor Relé + `12` testes no Cliente Local (incluindo [`test_api_communication.py`](client/backend/tests/test_api_communication.py) que testa todo o fluxo ponta a ponta entre Relé, Alice e Bob).
+- **Persistência de Sessões e Proteção contra *Replay Attack*** ([`session.py`](client/backend/src/backend/session.py), [`storage.py`](client/backend/src/backend/storage.py)):
+  - Sessões ECDH são salvas cifradas no SQLite local e restauradas no login (sem novo handshake).
+  - Cada mensagem leva `seq` + `ts` + `sid` dentro do payload autenticado; pacotes repetidos, fora de ordem, refletidos ou com timestamp futuro são descartados (`ReplayError`). Os contadores são persistidos.
+- **Suíte de Testes Automatizados (24 testes passando)**:
+  - `3` testes de integração no Servidor Relé + `21` testes no Cliente Local (incluindo [`test_replay_protection.py`](client/backend/tests/test_replay_protection.py)) (incluindo [`test_api_communication.py`](client/backend/tests/test_api_communication.py) que testa todo o fluxo ponta a ponta entre Relé, Alice e Bob).
 
 ---
 
 ### 🟡 2. SENDO FEITO (DOING — Em Andamento pela Equipe)
 
-- [ ] **Integração Completa da Camada de Serviços do Frontend (`client/frontend/src/services/`)**:
-  - Os serviços de chat ([`chatService.js`](client/frontend/src/services/chatService.js)), histórico ([`historyService.js`](client/frontend/src/services/historyService.js)) e segurança ([`securityService.js`](client/frontend/src/services/securityService.js)) já estão prontos.
-  - Falta criar `authService.js` (`/auth/register`, `/auth/login`, `/auth/logout`) e `friendsService.js` (`/users/search`, `/friends`, `/friends/request/{contato}`, `/friends/accept/{contato}`, `/friends/reject/{contato}`, `DELETE /friends/{contato}`) e exportá-los em [`client/frontend/src/services/index.js`](client/frontend/src/services/index.js).
-- [ ] **Construção das Telas no Frontend React (`client/frontend/src/App.jsx`)**:
-  - Substituir o template inicial do Vite em [`App.jsx`](client/frontend/src/App.jsx) pelas telas reais do mensageiro.
+- Nenhuma tarefa em andamento no momento.
 
 ---
 
 ### 🔴 3. AINDA PRECISA SER FEITO (TO-DO — Próximos Passos)
 
-#### Fase 1: Interface Gráfica em React (`client/frontend/src/`)
-- [ ] **Tela de Login e Cadastro**: Formulário consumindo `POST /auth/login` e `POST /auth/register` da API local.
-- [ ] **Sidebar de Amigos e Busca de Contatos**:
-  - Campo de busca (`GET /users/search?q=...`) com botão para enviar pedido de amizade (`POST /friends/request/{contato}`).
-  - Aba de solicitações pendentes com botões de aceitar (`POST /friends/accept/{contato}`) e recusar (`POST /friends/reject/{contato}`).
-  - Lista de amigos confirmados (`GET /friends`) para abrir a conversa.
-- [ ] **Janela de Chat E2EE**:
-  - Exibição do histórico decifrado (`GET /chat/history/{contato}`).
-  - Input de envio de mensagem (`POST /chat/send/{contato}` — que já inicia o handshake automaticamente se necessário).
-  - Botão/Modal de verificação do **Safety Number** (`GET /chat/safety-number/{contato}`).
-
-#### Fase 2: Atualização em Tempo Real (API Local ➡️ React)
-- [ ] **Polling ou Server-Sent Events (SSE)**:
-  - Adicionar atualização periódica (polling curto em `GET /chat/history/{contato}`) ou um endpoint SSE (`GET /chat/events`) para que novas mensagens recebidas em background apareçam na tela do React sem precisar recarregar.
-
-#### Fase 3: Melhorias Extras de Segurança (Opcional / Pós-MVP)
-- [ ] **Persistência de Sessões Simétricas**: Salvar sessões ECDH ativas no SQLite local ou renegociar automaticamente caso o backend Python seja reiniciado.
-- [ ] **Proteção contra *Replay Attack***: Incluir contador incremental de sequência no payload cifrado.
+- Nenhuma tarefa obrigatória pendente no backend. Ideias opcionais: rotação periódica da chave de sessão (*forward secrecy*), janela deslizante anti-replay e testes automatizados para o frontend.
 
 ---
 
@@ -173,7 +155,7 @@ Interfaces Swagger UI interativas:
 cd server
 uv run pytest -v
 
-# Testes do Cliente Local (12 testes: ECDH, ECDSA, Split-Key, TOFU, Serpent, HMAC, MitM e Fluxo Completo da API)
+# Testes do Cliente Local (21 testes: ECDH, ECDSA, Split-Key, TOFU, Serpent, HMAC, Anti-Replay, MitM e Fluxo Completo da API)
 cd ../client/backend
 uv run pytest -v
 
@@ -184,5 +166,7 @@ uv run pytest -s tests/test_api_communication.py
 ---
 
 📚 **Documentação Adicional**:
+- [Como o Shed Funciona por Dentro (Guia Criptográfico Detalhado)](docs/COMO_FUNCIONA.md)
+- [Roteiro de Gravação do Vídeo](ROTEIRO_VIDEO.md)
 - [Arquitetura de Autenticação, Descoberta e Gestão de Amigos](docs/AUTHENTICATION_AND_DISCOVERY.md)
 - [Quadro Kanban (DONE / DOING / TO-DO) e Lista de Tarefas](TODO.md)

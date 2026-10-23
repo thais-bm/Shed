@@ -29,10 +29,17 @@ class PasswordKeyDeriver:
         local_storage_key = key_material[:32]
         relay_login_secret = key_material[32:].hex()
 
+        SecurityAuditor.banner(
+            "CHAVES 1/4 - SPLIT-KEY DA SENHA (HKDF-SHA256)",
+            "Uma senha -> duas chaves independentes. O Relé só recebe uma delas.",
+        )
         SecurityAuditor.log_step(
             "AUTH",
-            "Split-Key concluído via HKDF-SHA256.",
-            "Chave local (32B) retida no dispositivo | Segredo de login derivado para o Relé.",
+            f"Split-Key concluído para '{username.strip().lower()}'.",
+            "Entrada            : senha mestre (fica só na memória; nunca é enviada)\n"
+            f"local_storage_key  : 32 B | fingerprint {SecurityAuditor.fingerprint(local_storage_key)} | NUNCA sai do dispositivo (cifra o cofre SQLite)\n"
+            f"relay_login_secret : 32 B | fingerprint {SecurityAuditor.fingerprint(relay_login_secret)} | único valor enviado ao Relé (guardado lá como hash Argon2)\n"
+            "Garantia           : o Relé não consegue derivar a local_storage_key a partir do que recebe.",
         )
         return local_storage_key, relay_login_secret
 
@@ -51,10 +58,20 @@ class IdentityKeyManager:
         """Gera a chave privada e pública de identidade permanente da conta."""
         private_key = ec.generate_private_key(self.curve)
         public_key = private_key.public_key()
+        pub_pem = public_key.public_bytes(
+            encoding=serialization.Encoding.PEM,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+        SecurityAuditor.banner(
+            "CHAVES 2/4 - IDENTIDADE PERMANENTE DA CONTA (ECDSA)",
+            "Prova quem você é: assina as chaves efêmeras do handshake.",
+        )
         SecurityAuditor.log_step(
             "ECDSA",
             "Par de Chaves de Identidade (ECDSA) gerado.",
-            f"Curva: {self.curve.name}",
+            f"Curva              : {self.curve.name} (384 bits)\n"
+            f"Chave pública      : fingerprint {SecurityAuditor.fingerprint(pub_pem)} (será publicada no Relé)\n"
+            "Chave privada      : NUNCA sai do dispositivo; será salva no SQLite cifrada com a local_storage_key.",
         )
         return private_key, public_key
 
@@ -107,7 +124,9 @@ class IdentityKeyManager:
         SecurityAuditor.log_step(
             "ECDSA",
             "Chave efêmera ECDH assinada com ECDSA-SHA256.",
-            f"Assinatura: {signature.hex()[:20]}...",
+            f"Assinatura         : {signature.hex()[:32]}... ({len(signature)} bytes, ECDSA-SHA256)\n"
+            f"Chave efêmera      : fingerprint {SecurityAuditor.fingerprint(ephemeral_public_key_pem)} (coberta pela assinatura)\n"
+            "Efeito             : o contato (e ninguém no meio do caminho) prova que esta chave veio de você.",
         )
         return signature
 
@@ -131,6 +150,9 @@ class IdentityKeyManager:
             SecurityAuditor.log_step(
                 "ECDSA",
                 "Assinatura ECDSA do contato validada com sucesso!",
+                f"Identidade do contato: fingerprint {SecurityAuditor.fingerprint(peer_identity_public_key_pem)}\n"
+                f"Chave efêmera recebida: fingerprint {SecurityAuditor.fingerprint(ephemeral_public_key_pem)}\n"
+                "Efeito: a chave efêmera pertence mesmo a este contato (sem substituição por MitM).",
             )
             return True
         except InvalidSignature as exc:
@@ -153,7 +175,11 @@ class ECDHManager:
         private_key = ec.generate_private_key(self.curve)
         public_key = private_key.public_key()
         
-        SecurityAuditor.log_step("ECDH", "Par de chaves gerado.", f"Curva: {self.curve.name}")
+        SecurityAuditor.log_step(
+            "ECDH",
+            "Par de chaves EFÊMERAS ECDH gerado (uma por sessão).",
+            f"Curva: {self.curve.name} | A chave privada efêmera nunca é enviada nem exibida.",
+        )
         return private_key, public_key
 
     def export_public_key(self, public_key) -> bytes:
@@ -162,9 +188,11 @@ class ECDHManager:
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo
         )
-        # Mostra apenas um trecho no log para não poluir o terminal
-        preview = pem.splitlines()[1].decode()[:20] 
-        SecurityAuditor.log_step("ECDH", "Chave pública exportada para PEM.", f"Preview: {preview}...")
+        SecurityAuditor.log_step(
+            "ECDH",
+            "Chave pública efêmera exportada (PEM) para envio pela rede.",
+            f"Fingerprint: {SecurityAuditor.fingerprint(pem)} (o mesmo valor aparece no terminal do Relé)",
+        )
         return pem
 
     def load_public_key(self, pem_bytes: bytes):
@@ -180,7 +208,15 @@ class ECDHManager:
         """
         # 1. O cruzamento matemático (Exchange)
         shared_secret = my_private_key.exchange(ec.ECDH(), peer_public_key)
-        SecurityAuditor.log_step("ECDH", "Segredo compartilhado bruto derivado.", f"Tamanho: {len(shared_secret)} bytes")
+        SecurityAuditor.banner(
+            "CHAVES 4/4 - SEGREDO COMPARTILHADO (ECDH + HKDF-SHA256)",
+            "Cada lado combina a SUA privada com a PÚBLICA do outro: o segredo nunca trafega.",
+        )
+        SecurityAuditor.log_step(
+            "ECDH",
+            "Segredo compartilhado bruto derivado (ECDH).",
+            f"Tamanho: {len(shared_secret)} bytes | O valor bruto não é exibido nem usado direto como chave.",
+        )
 
         # 2. Key Derivation Function (KDF)
         # O Serpent suporta chaves de até 256 bits (32 bytes).
@@ -191,5 +227,11 @@ class ECDHManager:
             info=b'shed-session-key', # Contexto para evitar reuso acidental de chaves
         ).derive(shared_secret)
 
-        SecurityAuditor.log_step("SERPENT", "Chave simétrica de 256-bits gerada via HKDF.", f"Pronta para a cifra.")
+        SecurityAuditor.log_step(
+            "SERPENT",
+            "Chave de sessão de 256 bits gerada via HKDF-SHA256.",
+            "Contexto (info)  : 'shed-session-key'\n"
+            f"Fingerprint      : {SecurityAuditor.fingerprint(derived_key)}\n"
+            "Confira          : este fingerprint deve ser IGUAL nos terminais dos dois contatos.",
+        )
         return derived_key
